@@ -1,7 +1,7 @@
 import smtplib
 import socket
 import ssl
-from core.base import BaseModule
+from mailspray.core.base import BaseModule
 
 
 class SMTPModule(BaseModule):

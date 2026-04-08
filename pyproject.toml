@@ -1,0 +1,30 @@
+[build-system]
+requires = ["hatchling>=1.24.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mailspray"
+dynamic = ["version"]
+description = "Mail password spraying CLI (OWA, EWS, ADFS, IMAP, SMTP, Roundcube, Zimbra)"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{ name = "mailspray contributors" }]
+dependencies = [
+    "requests>=2.28.0",
+    "urllib3>=1.26.0",
+]
+
+[project.scripts]
+mailspray = "mailspray.cli:run_cli"
+
+[project.urls]
+Homepage = "https://github.com/s0ld13rr/mailspray"
+
+[tool.hatch.version]
+path = "mailspray/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["mailspray"]
+
+[tool.hatch.build.targets.sdist]
+include = ["/mailspray", "/README.md", "/main.py"]

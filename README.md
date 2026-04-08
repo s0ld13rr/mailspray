@@ -14,6 +14,38 @@ Password spraying toolkit for mail systems. Supports multiple protocols with bui
 
 > **For authorized security testing only.**
 
+### Install
+
+**pipx** (isolated CLI, recommended when you already use [pipx](https://pipx.pypa.io/)):
+
+```bash
+cd /path/to/mailspray
+pipx install .
+```
+
+After the project is published on PyPI, `pipx install mailspray` will work the same way.
+
+**Editable install** from a git clone:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -e .
+mailspray -V
+```
+
+You can also run `python main.py …` from the repo root (thin wrapper) or `python -m mailspray …` once the package is on `PYTHONPATH` (e.g. after `pip install -e .`).
+
+---
+
+### Local notes, lab, and sensitive output
+
+Everything that is **not** part of the public codebase (reflections, `project.md`, compose, `.env`, user lists, VM artifacts) lives under **`.claude/`**, which is **gitignored**. Put **`project.md`** at **`.claude/project.md`**. Put experiments, Docker Compose, and lab VMs only under **`.claude/lab/`**. The repository root should stay limited to the script and its minimal layout.
+
+**Credential output (`-o`, `-j`):** Hits are **never** written inside the project tree. A **basename only** (e.g. `-o found.txt`) goes to **`~/Downloads/found.txt`**. A **relative path with directories** is resolved from your **current working directory** and **rejected** if it would land inside the repo. **Absolute** paths are allowed only **outside** the project directory.
+
+**Containers:** IMAP and SMTP (e.g. GreenMail) in local Docker are useful. Full **OWA/EWS/Exchange** and **ADFS** parity usually needs a real lab or Windows stack, not a single generic image. Details belong in your local **`.claude/project.md`**.
+
 ---
 
 ## Protocols

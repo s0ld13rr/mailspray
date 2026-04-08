@@ -1,5 +1,5 @@
 import xml.sax.saxutils as saxutils
-from core.base import BaseModule
+from mailspray.core.base import BaseModule
 
 # WS-Trust 2005 SOAP envelope for on-prem ADFS
 _SOAP_2005 = """\
@@ -22,7 +22,7 @@ _SOAP_2005 = """\
     <t:RequestSecurityToken xmlns:t='http://schemas.xmlsoap.org/ws/2005/02/trust'>
       <wsp:AppliesTo xmlns:wsp='http://schemas.xmlsoap.org/ws/2004/09/policy'>
         <a:EndpointReference>
-          <a:Address>urn:federation:MicrosoftOnline</a:Address>
+          <a:Address>{applies_to}</a:Address>
         </a:EndpointReference>
       </wsp:AppliesTo>
       <t:KeyType>http://schemas.xmlsoap.org/ws/2005/05/identity/NoProofKey</t:KeyType>
@@ -52,7 +52,7 @@ _SOAP_13 = """\
     <t:RequestSecurityToken xmlns:t='http://docs.oasis-open.org/ws-sx/ws-trust/200512'>
       <wsp:AppliesTo xmlns:wsp='http://schemas.xmlsoap.org/ws/2004/09/policy'>
         <a:EndpointReference>
-          <a:Address>urn:federation:MicrosoftOnline</a:Address>
+          <a:Address>{applies_to}</a:Address>
         </a:EndpointReference>
       </wsp:AppliesTo>
       <t:KeyType>http://docs.oasis-open.org/ws-sx/ws-trust/200512/Bearer</t:KeyType>
@@ -80,12 +80,14 @@ class ADFSModule(BaseModule):
             self.port = 443
         if not self.scheme:
             self.scheme = "https"
+        self.applies_to = "urn:federation:MicrosoftOnline"
 
     def _try_endpoint(self, session, endpoint, soap_template, username, password):
         body = soap_template.format(
             url=endpoint,
             username=saxutils.escape(username),
             password=saxutils.escape(password),
+            applies_to=saxutils.escape(self.applies_to),
         ).encode("utf-8")
         headers = {
             "Content-Type": "application/soap+xml; charset=UTF-8",

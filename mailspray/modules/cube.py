@@ -1,5 +1,5 @@
 import re
-from core.base import BaseModule
+from mailspray.core.base import BaseModule
 
 
 class RoundcubeModule(BaseModule):
@@ -49,8 +49,9 @@ class RoundcubeModule(BaseModule):
                 location = r.headers.get("Location", "")
                 if "_task=mail" in location:
                     return True
-                if "_task=login" not in location and "_action=login" not in location:
-                    return True
+                for c in session.cookies:
+                    if c.name.startswith("roundcube_sessid"):
+                        return True
         except Exception:
             pass
         finally:

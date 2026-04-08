@@ -1,5 +1,5 @@
 import re
-from core.base import BaseModule
+from mailspray.core.base import BaseModule
 
 
 class ZimbraModule(BaseModule):
@@ -54,10 +54,8 @@ class ZimbraModule(BaseModule):
                 location = r.headers.get("Location", "")
                 if "/mail" in location or "/zimbra/mail" in location:
                     return True
-                if "loginOp" not in location and "loginError" not in location:
-                    return True
 
-            if "ZM_AUTH_TOKEN" in r.cookies:
+            if r.cookies.get("ZM_AUTH_TOKEN"):
                 return True
 
         except Exception:
