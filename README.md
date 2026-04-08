@@ -27,6 +27,8 @@ mailspray --help
 
 Or clone and `pipx install .`. Requires Python **3.9+**. After PyPI publish: `pipx install mailspray`.
 
+**Upgrade from GitHub:** either reinstall over the venv (`pipx install git+https://github.com/s0ld13rr/mailspray.git --force`) or run `pipx upgrade mailspray` from a directory where **no** subpath named `mailspray` exists (for example `cd ~` first, not from this repo root).
+
 ---
 
 ## Usage overview
