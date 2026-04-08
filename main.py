@@ -194,19 +194,51 @@ class SprayEngine:
         elif self.args.verbose:
             log_fail(proto_name, target, user, password)
 
+    def _progress_thread(self):
+        """Background thread: prints live progress line to stderr."""
+        while not self._stop_progress.is_set():
+            self._print_progress()
+            self._stop_progress.wait(2)
+        self._clear_progress()
+
+    def _print_progress(self):
+        with self.lock:
+            done = self.done
+            found = len(self.found)
+            errors = self.errors
+
+        elapsed = time.time() - self.start_time
+        pct = (done / self.total * 100) if self.total else 0
+        actual = done - self.skipped
+        rps = f"{actual / elapsed:.1f}" if elapsed > 1 else "-"
+        eta_str = ""
+        if actual > 0 and done < self.total:
+            remaining = self.total - done
+            eta_sec = (elapsed / actual) * remaining
+            eta_str = f" ETA {_fmt_duration(eta_sec)}"
+
+        line = (f"  {C.D}[{pct:5.1f}%]{C.X} "
+                f"{done}/{self.total}  "
+                f"{C.G}{found} found{C.X}  "
+                f"{C.Y}{errors} err{C.X}  "
+                f"{rps} req/s"
+                f"{eta_str}")
+        # write to stderr so it doesn't mix with piped stdout
+        sys.stderr.write(f"\r{line}  \033[K")
+        sys.stderr.flush()
+
+    def _clear_progress(self):
+        sys.stderr.write("\r\033[K")
+        sys.stderr.flush()
+
     def run(self, scanner, pairs, proto_key, target):
         self.total = len(pairs)
         self.start_time = time.time()
 
-        log_info(f"Starting spray: {C.W}{self.total}{C.X} combinations / {C.W}{self.args.threads}{C.X} threads"
-                 + (f" / {C.Y}no delay{C.X}" if self.args.delay == 0 else ""))
-        if self.args.delay > 0:
-            log_info(f"Delay: {self.args.delay}s (jitter: {self.args.jitter})")
-        if self.args.max_attempts > 0:
-            log_info(f"Max attempts per user: {C.Y}{self.args.max_attempts}{C.X}")
-        if self.args.stop_on_success:
-            log_info(f"Stop-on-success: {C.Y}enabled{C.X}")
-        print()
+        # start live progress
+        self._stop_progress = threading.Event()
+        progress = threading.Thread(target=self._progress_thread, daemon=True)
+        progress.start()
 
         try:
             with ThreadPoolExecutor(max_workers=self.args.threads) as pool:
@@ -215,18 +247,20 @@ class SprayEngine:
                     f = pool.submit(self._worker, scanner, user, password, proto_key, target)
                     futures.append(f)
                 for f in as_completed(futures):
-                    pass  # exceptions handled inside worker
+                    pass
         except KeyboardInterrupt:
             print()
             log_warn("Interrupted by user")
+
+        self._stop_progress.set()
+        progress.join(timeout=1)
 
         self._summary()
 
     def _summary(self):
         elapsed = time.time() - self.start_time
-        minutes, seconds = divmod(int(elapsed), 60)
         actual = self.done - self.skipped
-        rps = f"{actual / elapsed:.1f}" if elapsed > 0 else "∞"
+        rps = f"{actual / elapsed:.1f}" if elapsed > 0 else "-"
 
         print()
         print(f"  {C.W}{'─' * 58}{C.X}")
@@ -236,7 +270,7 @@ class SprayEngine:
                  f"{C.Y}{self.errors} errors{C.X}")
         if self.skipped:
             stats += f"  /  {C.D}{self.skipped} skipped{C.X}"
-        stats += f"  /  {minutes}m {seconds}s  /  {C.C}{rps} req/s{C.X}"
+        stats += f"  /  {_fmt_duration(elapsed)}  /  {C.C}{rps} req/s{C.X}"
 
         print(f"  {C.W}Results:{C.X}  {stats}")
 
@@ -258,15 +292,32 @@ class SprayEngine:
 
 # ── CLI ─────────────────────────────────────────────────────────────
 
-BANNER = f"""
-{C.R}______  ___      __________________
-___   |/  /_____ ___(_)__  /_  ___/____________________ _____  __
-__  /|_/ /_  __ `/_  /__  /_____ ___  __ \\_  ___/  __ `/_  / / /
-_  /  / / / /_/ /_  / _  / ____/ /__  /_/ /  /   / /_/ /_  /_/ /
-/_/  /_/  \\__,_/ /_/  /_/  /____/ _  .___//_/    \\__,_/ _\\__, /
-                                  /_/  {C.C}v{__version__}{C.R}           /____/{C.X}
-{C.D} mail password spraying toolkit // authorized testing only{C.X}
-"""
+BANNER = f"""\
+{C.R}
+    ███╗   ███╗ █████╗ ██╗██╗     ███████╗██████╗ ██████╗  █████╗ ██╗   ██╗
+    ████╗ ████║██╔══██╗██║██║     ██╔════╝██╔══██╗██╔══██╗██╔══██╗╚██╗ ██╔╝
+    ██╔████╔██║███████║██║██║     ███████╗██████╔╝██████╔╝███████║ ╚████╔╝
+    ██║╚██╔╝██║██╔══██║██║██║     ╚════██║██╔═══╝ ██╔══██╗██╔══██║  ╚██╔╝
+    ██║ ╚═╝ ██║██║  ██║██║███████╗███████║██║     ██║  ██║██║  ██║   ██║
+    ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝╚══════╝╚══════╝╚═╝     ╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝{C.X}
+                                          {C.C}v{__version__}{C.X} {C.D}// mail password spraying toolkit{C.X}"""
+
+
+def _fmt_duration(seconds):
+    """Format seconds into human-readable duration."""
+    if seconds < 60:
+        return f"{int(seconds)}s"
+    elif seconds < 3600:
+        m, s = divmod(int(seconds), 60)
+        return f"{m}m {s}s"
+    elif seconds < 86400:
+        h, rem = divmod(int(seconds), 3600)
+        m = rem // 60
+        return f"{h}h {m}m"
+    else:
+        d, rem = divmod(int(seconds), 86400)
+        h = rem // 3600
+        return f"{d}d {h}h"
 
 
 def build_parser():
@@ -423,11 +474,14 @@ def main():
     if args.port:
         scanner.port = args.port
 
-    # ── Banner ──
+    # ── Pre-flight ──
     print(BANNER)
-    print(f"  {proto_tag(proto['name'])} {C.W}{scanner.base_url()}{C.X}")
-    if args.fast:
-        log_warn(f"Fast mode: {C.Y}{args.threads}{C.X} threads — for internal targets only")
+    print()
+
+    target_url = scanner.base_url()
+    mode = f"{C.Y}FAST{C.X}" if args.fast else f"{C.D}normal{C.X}"
+
+    print(f"  {proto_tag(proto['name'])} {C.W}{target_url}{C.X}")
 
     if args.domain:
         fmt = args.user_format if args.user_format != "auto" else PROTOCOL_USER_FORMAT[args.protocol]
@@ -436,9 +490,24 @@ def main():
             "upn":           f"user@{args.domain}",
             "plain":         "plain (no domain)",
         }
-        log_info(f"User format: {C.W}{fmt_labels[fmt]}{C.X}")
+        log_info(f"Format: {C.W}{fmt_labels[fmt]}{C.X}")
 
-    log_info(f"Users: {len(users)}  |  Passwords: {len(passwords)}  |  Total: {len(pairs)}")
+    log_info(f"Users: {C.W}{len(users)}{C.X}  |  Passwords: {C.W}{len(passwords)}{C.X}  |  Combos: {C.W}{len(pairs)}{C.X}")
+    log_info(f"Threads: {C.W}{args.threads}{C.X}  |  Mode: {mode}")
+
+    if args.delay > 0:
+        log_info(f"Delay: {C.W}{args.delay}s{C.X} (jitter: {args.jitter})")
+        # ETA: each batch = threads concurrent, then delay
+        batches = (len(pairs) + args.threads - 1) // args.threads
+        eta_sec = batches * args.delay
+        log_info(f"ETA: {C.Y}~{_fmt_duration(eta_sec)}{C.X} {C.D}(estimated with delay, actual may vary){C.X}")
+    else:
+        log_info(f"Delay: {C.D}none{C.X}")
+
+    if args.max_attempts > 0:
+        log_info(f"Max attempts/user: {C.W}{args.max_attempts}{C.X}")
+    if args.stop_on_success:
+        log_info(f"Stop-on-success: {C.W}enabled{C.X}")
 
     print()
 
