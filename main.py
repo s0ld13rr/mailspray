@@ -147,7 +147,15 @@ class SprayEngine:
                 with open(self.args.output, "a") as f:
                     f.write(uri + "\n")
 
+    def _print_line(self, msg):
+        """Print a line cleanly: clear progress bar, print, progress resumes on next tick."""
+        self._clear_progress()
+        print(msg)
+
     def _worker(self, scanner, user, password, proto_key, target):
+        if self._interrupted:
+            return
+
         proto_name = PROTOCOLS[proto_key]["name"]
 
         with self.lock:
@@ -155,15 +163,14 @@ class SprayEngine:
                 self.done += 1
                 self.skipped += 1
                 if self.args.verbose:
-                    log_skip(proto_name, target, user, "already found")
+                    self._print_line(f"  {proto_tag(proto_name)} {target:<28} {C.D}[~]{C.X} {user} — {C.D}already found{C.X}")
                 return
             if self.args.max_attempts > 0:
                 if self._user_attempts.get(user, 0) >= self.args.max_attempts:
                     self.done += 1
                     self.skipped += 1
                     if self.args.verbose:
-                        log_skip(proto_name, target, user,
-                                 f"max attempts ({self.args.max_attempts})")
+                        self._print_line(f"  {proto_tag(proto_name)} {target:<28} {C.D}[~]{C.X} {user} — {C.D}max attempts ({self.args.max_attempts}){C.X}")
                     return
 
         try:
@@ -174,7 +181,7 @@ class SprayEngine:
                 self.done += 1
                 self._user_attempts[user] = self._user_attempts.get(user, 0) + 1
             if self.args.verbose:
-                log_error(proto_name, target, user, str(e)[:60])
+                self._print_line(f"  {proto_tag(proto_name)} {target:<28} {C.Y}[!]{C.X} {user} — {C.Y}{str(e)[:60]}{C.X}")
             return
 
         with self.lock:
@@ -184,10 +191,10 @@ class SprayEngine:
                 self._user_found.add(user)
 
         if result:
-            log_success(proto_name, target, user, password)
+            self._print_line(f"  {proto_tag(proto_name)} {target:<28} {C.G}[+]{C.X} {user}:{C.G}{password}{C.X}")
             self._save(proto_key, target, user, password)
         elif self.args.verbose:
-            log_fail(proto_name, target, user, password)
+            self._print_line(f"  {proto_tag(proto_name)} {target:<28} {C.R}[-]{C.X} {user}:{C.D}{password}{C.X}")
 
     # ── Progress ──
 
@@ -239,29 +246,32 @@ class SprayEngine:
         progress = threading.Thread(target=self._progress_thread, daemon=True)
         progress.start()
 
+        pool = None
         try:
             for i in range(0, len(pairs), batch_size):
                 if self._interrupted:
                     break
 
                 batch = pairs[i:i + batch_size]
+                pool = ThreadPoolExecutor(max_workers=len(batch))
+                futures = [
+                    pool.submit(self._worker, scanner, u, p, proto_key, target)
+                    for u, p in batch
+                ]
+                for f in as_completed(futures):
+                    pass
+                pool.shutdown(wait=False)
+                pool = None
 
-                with ThreadPoolExecutor(max_workers=len(batch)) as pool:
-                    futures = [
-                        pool.submit(self._worker, scanner, u, p, proto_key, target)
-                        for u, p in batch
-                    ]
-                    for f in as_completed(futures):
-                        pass
-
-                # delay between batches, skip after last batch
                 if self.args.delay > 0 and (i + batch_size) < len(pairs):
                     self._batch_delay()
 
         except KeyboardInterrupt:
             self._interrupted = True
+            if pool:
+                pool.shutdown(wait=False, cancel_futures=True)
             self._clear_progress()
-            log_warn("Interrupted by user")
+            log_warn("Interrupted — finishing current batch")
 
         self._stop_progress.set()
         progress.join(timeout=1)
