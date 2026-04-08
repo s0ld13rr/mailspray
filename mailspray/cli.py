@@ -54,15 +54,18 @@ def resolve_credential_output_path(path, repo_root):
     """Resolve paths for -o / -j. Never place files inside repo_root.
 
     Returns (absolute_path_or_None, error_message_or_None).
-    - Relative **basename only** (e.g. ``found.txt``) -> ``~/Downloads/found.txt``.
-    - Absolute path (after ``~`` expansion) -> used as-is if outside repo.
-    - Other relative paths -> resolved against cwd; error if that lands inside repo.
+    Requires an explicit path: absolute (``/tmp/out.txt``), or relative with a
+    directory part (``../results/out.txt``). Bare filenames like ``out.txt`` are rejected.
     """
     if not path:
         return None, None
     raw = path.strip()
+    if not raw:
+        return None, (
+            "Output path is empty. Pass a non-empty path after -o / --output "
+            "(or -j), e.g. -o /tmp/mailspray-hits.txt"
+        )
     repo_norm = os.path.normpath(os.path.abspath(repo_root))
-    dl = _downloads_dir()
 
     def under_repo(p_abs):
         p_abs = os.path.normpath(os.path.abspath(p_abs))
@@ -78,20 +81,22 @@ def resolve_credential_output_path(path, repo_root):
         if under_repo(final):
             return None, (
                 f"Credential output must be outside the project tree ({repo_root}). "
-                f"Use {_downloads_dir()!s} or another directory."
+                f"Pick a path such as {_downloads_dir()!s}/hits.txt or /tmp/hits.txt."
             )
         return final, None
 
     norm_raw = expanded.replace("\\", "/")
     if "/" not in norm_raw and not norm_raw.startswith(".."):
-        final = os.path.normpath(os.path.join(dl, os.path.basename(expanded)))
-        return final, None
+        return None, (
+            "Bare filenames are not allowed for -o / -j. Specify a full path, for example: "
+            f"-o {_downloads_dir()}/mailspray-hits.txt or -o /tmp/mailspray-hits.txt"
+        )
 
     final = os.path.normpath(os.path.join(os.getcwd(), expanded))
     if under_repo(final):
         return None, (
             "Credential output cannot be inside the project directory (resolved from cwd). "
-            f"Use a basename only (writes to ~/Downloads) or an absolute path outside the repo."
+            "Use an absolute path outside the repo or a relative path that resolves outside it."
         )
     return final, None
 
@@ -538,10 +543,10 @@ def build_parser():
                         help="Enable verbose protocol debug where supported")
 
     output = parser.add_argument_group(f"{C.W}OUTPUT{C.X}")
-    output.add_argument("-o", "--output", default=None, metavar="FILE",
-                        help="Append valid creds to FILE (basename only -> ~/Downloads/FILE; never inside project)")
-    output.add_argument("-j", "--json", dest="json_output", metavar="FILE",
-                        help="JSON of found creds (basename only -> ~/Downloads/FILE; never inside project)")
+    output.add_argument("-o", "--output", default=None, metavar="PATH",
+                        help="Append valid creds to PATH (absolute or relative with dirs; bare names rejected; never inside project)")
+    output.add_argument("-j", "--json", dest="json_output", metavar="PATH",
+                        help="JSON of found creds (same path rules as -o)")
     output.add_argument("-v", "--verbose", action="store_true",
                         help="Show failed attempts, skips, and errors")
     output.add_argument("-N", "--no-color", action="store_true",
@@ -564,7 +569,7 @@ def build_parser():
   mailspray owa mail.corp.com -u users.txt -p 'Winter2026!' -d CORP -n 3 -S -e 30 -J 0.3
 
   {C.D}# OWA spray + JSON{C.X}
-  mailspray owa https://owa.corp.com -u users.txt -p passes.txt -d CORP -F upn -e 0 -t 8 -S -j results.json
+  mailspray owa https://owa.corp.com -u users.txt -p passes.txt -d CORP -F upn -e 0 -t 8 -S -j /tmp/mailspray-results.json
 
   {C.D}# ADFS — UPN auto-applied{C.X}
   mailspray adfs adfs.corp.com -u users.txt -p passes.txt -d corp.local -n 3 -S -e 30 -J 0.3
@@ -584,7 +589,7 @@ def build_parser():
   mailspray roundcube http://mail.corp.com:8080 -u users.txt -p pass.txt -d corp.com
 
   {C.D}# Zimbra + JSON{C.X}
-  mailspray zimbra http://webmail.target.com:8443 -u users.txt -p 'Spring2026!' -d target.com -j results.json
+  mailspray zimbra http://webmail.target.com:8443 -u users.txt -p 'Spring2026!' -d target.com -j /tmp/mailspray-results.json
 
 {C.W}SUPPORTED PROTOCOLS:{C.X}
   owa          Outlook Web Access (Exchange)           [443]  auto: CORP\\user

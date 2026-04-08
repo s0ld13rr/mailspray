@@ -45,7 +45,9 @@ The **`mailspray/`** directory is the **Python package** consumed by `pip` / `py
 
 Anything that is **not** shipping code (compose, lab notes, `.env`, user lists, pytest cache, local venv, VM notes) should live under **`.cursor/`**, which is **gitignored**. You can remove **`.cursor/`** entirely when you want a minimal tree; it is never pushed. Optional: keep private notes under **`.claude/`** (also gitignored) if you prefer that split.
 
-**Credential output (`-o`, `-j`):** Hits are **never** written inside the project tree. A **basename only** (e.g. `-o found.txt`) goes to **`~/Downloads/found.txt`**. A **relative path with directories** is resolved from your **current working directory** and **rejected** if it would land inside the repo. **Absolute** paths are allowed only **outside** the project directory.
+**Credential output (`-o`, `-j`):** Optional. If you use them, pass an **explicit path**: absolute (e.g. `-o /tmp/hits.txt`) or **relative path that includes a directory** (e.g. `-o ../out/hits.txt`). **Bare filenames** like `-o found.txt` are **rejected** with an error telling you to specify a full path. Hits are **never** written inside the project tree. Paths under the repo (after resolving relative paths from cwd) are **rejected**.
+
+**What lands on GitHub:** only **tracked** files (`main.py`, `mailspray/`, `pyproject.toml`, `README.md`, `.gitignore`, etc.). **Not** pushed: `.claude/`, `.cursor/`, `dist/`, `__pycache__/`, `.DS_Store` (also add macOS `.DS_Store` to your **global** `core.excludesfile` if needed), `/project.md`, and other gitignored paths. Your local `ls` shows the full working tree; the remote clone matches the repo index only.
 
 **Containers:** IMAP and SMTP (e.g. GreenMail) in local Docker are useful. Full **OWA/EWS/Exchange** and **ADFS** parity usually needs a Windows lab or eval stack. After you clone, copy **`.cursor/lab/docker-compose.example.yml` → `.cursor/lab/docker-compose.yml`** and read **`.cursor/lab/README.md`** (those paths exist only on your machine).
 
@@ -119,7 +121,7 @@ ENGINE:
   --stop-on-success      Skip remaining passwords for a user after first success
 
 OUTPUT:
-  -o, --output FILE      Output file for valid creds (default: found.txt)
+  -o, --output PATH      Append valid creds (absolute or path with directory; bare name rejected)
   --json FILE            Save found credentials to JSON file
   -v, --verbose          Show failed attempts, skips, and errors
   --no-color             Disable colored output
@@ -155,7 +157,7 @@ mailspray roundcube http://mail.corp.com:8080 -u users.txt -p pass.txt -d corp.c
 
 # Zimbra + JSON output
 mailspray zimbra http://webmail.target.com:8443 -u users.txt -p 'Spring2026!' \
-  -d target.com --json results.json
+  -d target.com --json /tmp/mailspray-results.json
 ```
 
 ---
