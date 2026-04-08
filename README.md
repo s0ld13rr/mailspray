@@ -1,98 +1,140 @@
-# mailspray
-
-**Version 0.5.4**
+# mailspray **v0.5.5**
 
 ```
-______  ___      __________________
-___   |/  /_____ ___(_)__  /_  ___/____________________ _____  __
-__  /|_/ /_  __ `/_  /__  /_____ ___  __ \_  ___/  __ `/_  / / /
-_  /  / / / /_/ /_  / _  / ____/ /__  /_/ /  /   / /_/ /_  /_/ /
-/_/  /_/  \__,_/ /_/  /_/  /____/ _  .___//_/    \__,_/ _\__, /
-                                  /_/                 /____/
+    ███╗   ███╗ █████╗ ██╗██╗     ███████╗██████╗ ██████╗  █████╗ ██╗   ██╗
+    ████╗ ████║██╔══██╗██║██║     ██╔════╝██╔══██╗██╔══██╗██╔══██╗╚██╗ ██╔╝
+    ██╔████╔██║███████║██║██║     ███████╗██████╔╝██████╔╝███████║ ╚████╔╝
+    ██║╚██╔╝██║██╔══██║██║██║     ╚════██║██╔═══╝ ██╔══██╗██╔══██║  ╚██╔╝
+    ██║ ╚═╝ ██║██║  ██║██║███████╗███████║██║     ██║  ██║██║  ██║   ██║
+    ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝╚══════╝╚══════╝╚═╝     ╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝
+                                          v0.5.5 // mail password spraying toolkit
 ```
 
-CLI для проверки устойчивости почтовых стеков к перебору паролей: батчи, задержки, джиттер, лимиты попыток на пользователя, форматы логинов по протоколу.
+CLI for password spraying against mail stacks: OWA, EWS, ADFS, IMAP, SMTP, Roundcube, Zimbra. Batching, delay and jitter between batches, per-user attempt limits, protocol-aware username formatting.
 
-> Для **легитимных** пентестов, аудита и упражнений в изолированных стендах.
+**Authorized security testing only.**
+
+Full flag reference (same layout as below): `mailspray --help`
 
 ---
 
-## ✨ Возможности
-
-| | |
-|:---|:---|
-| **Протоколы** | OWA, EWS, ADFS, IMAP, SMTP, Roundcube, Zimbra |
-| **Контроль нагрузки** | Параллельность (`-t`), пауза между батчами (`-e`), джиттер (`-J`) |
-| **Политика попыток** | Лимит на пользователя (`-n`), стоп после успеха (`-S`) |
-| **Вывод** | Консоль, плюс опционально `-o` (текст) и `-j` (JSON) |
-| **Цели** | Внешние и внутренние хосты, свой CA (`-T` timeout и др. см. `--help`) |
-
----
-
-## 📦 Установка
-
-**pipx** (рекомендуется, команда `mailspray` в PATH):
-
-```bash
-git clone https://github.com/s0ld13rr/mailspray.git
-cd mailspray
-pipx install .
-mailspray --help
-```
-
-Без клонирования:
+## Install
 
 ```bash
 pipx install git+https://github.com/s0ld13rr/mailspray.git
-```
-
-После публикации в PyPI: `pipx install mailspray`.
-
-**Режим разработки:**
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e .
-mailspray -V
-```
-
-Требуется **Python 3.9+**.
-
----
-
-## 🚀 Быстрый старт
-
-```bash
-# Справка по всем флагам
 mailspray --help
+```
 
-# Один логин, один протокол (пример: EWS)
-mailspray ews https://mail.example.com -k user -p 'password' -d CORP -F upn
+Or clone and `pipx install .`. Requires Python **3.9+**. After PyPI publish: `pipx install mailspray`.
 
-# Списки пользователей и паролей, OWA, сглаженная нагрузка
-mailspray owa mail.example.com -u users.txt -p passes.txt -d CORP \
-  -n 3 -S -e 30 -J 0.3 -t 5
+---
+
+## Usage overview
+
+```
+mailspray [-P PORT] (-u USER | -k USER) -p PASS [-d DOMAIN] [-F FMT] [-A URI] [-t N] [-f] [-e SEC] [-B SCOPE] [-J 0-1] [-T SEC] [-n N] [-S] [-D] [-o PATH] [-j PATH] [-v] [-N] [-q] [-h] [-V]
+          PROTOCOL TARGET
+```
+
+### TARGET
+
+| | |
+|:---|:---|
+| **PROTOCOL** | `owa`, `ews`, `adfs`, `imap`, `smtp`, `roundcube`, `zimbra` |
+| **TARGET** | Host, IP, or URL (e.g. `http://mail.corp.com:8080`) |
+| **-P, --port** | Override default port |
+
+### CREDENTIALS
+
+| | |
+|:---|:---|
+| **-u, --user** | Username or file with usernames (spray mode) |
+| **-k, --probe** | Single-user probe: one login attempt, then exit |
+| **-p, --password** | Password or file with passwords |
+| **-d, --domain** | Domain applied to usernames (format auto per protocol) |
+| **-F, --user-format** | `auto`, `domain_prefix` (`CORP\user`), `upn` (`user@domain`), `plain` |
+| **-A, --adfs-applies-to** | ADFS AppliesTo URI (default: `urn:federation:MicrosoftOnline`) |
+
+### ENGINE
+
+| | |
+|:---|:---|
+| **-t, --threads** | Batch size: concurrent requests per round (default: 5) |
+| **-f, --fast** | Fast mode: 30 threads if `-t` not set (internal targets) |
+| **-e, --delay** | Delay **between batches** in seconds |
+| **-B, --delay-scope** | `batch` only (`request` not implemented) |
+| **-J, --jitter** | Jitter factor for delay (0.0–1.0) |
+| **-T, --timeout** | Connection timeout in seconds (default: 10) |
+| **-n, --max-attempts** | Max logins per user before skip (0 = unlimited) |
+| **-S, --stop-on-success** | Stop further passwords for that user after first hit |
+| **-D, --debug** | Verbose protocol debug where supported |
+
+### OUTPUT
+
+| | |
+|:---|:---|
+| **-o, --output** | Append valid creds to PATH (absolute or relative with dirs; bare names rejected; never inside package tree) |
+| **-j, --json** | JSON file of found creds (same path rules as `-o`) |
+| **-v, --verbose** | Show failures, skips, errors |
+| **-N, --no-color** | Disable ANSI colors |
+| **-q, --no-progress** | Hide live progress line |
+
+### MISC
+
+| | |
+|:---|:---|
+| **-h, --help** | Help |
+| **-V, --version** | Version |
+
+---
+
+## Examples
+
+```bash
+# Probe one user (EWS)
+mailspray ews https://mail.corp.local -k auditor1 -p 'Secret!' -d CORP -F upn -T 15 -D
+
+# External OWA — delay between batches, cap attempts per user
+mailspray owa mail.corp.com -u users.txt -p 'Winter2026!' -d CORP -n 3 -S -e 30 -J 0.3
+
+# OWA spray + JSON
+mailspray owa https://owa.corp.com -u users.txt -p passes.txt -d CORP -F upn -e 0 -t 8 -S -j /tmp/mailspray-results.json
+
+# ADFS — UPN from -d
+mailspray adfs adfs.corp.com -u users.txt -p passes.txt -d corp.local -n 3 -S -e 30 -J 0.3
+
+# EWS
+mailspray ews https://mail.corp.com -u users.txt -p passes.txt -d CORP -n 3 -S -e 20 -J 0.5
+
+# Internal — fast (30 threads if -t omitted)
+mailspray imap 192.168.1.10 -u users.txt -p 'Password1' -f
+mailspray owa 10.10.10.5 -u users.txt -p passes.txt -d CORP -f -n 3
+
+# SMTP
+mailspray smtp smtp.target.com -u emails.txt -p passwords.txt -e 5 -J 0.4
+mailspray smtp smtp.corp.com -u users.txt -p passes.txt -d corp.local -F upn
+
+# Roundcube custom port
+mailspray roundcube http://mail.corp.com:8080 -u users.txt -p pass.txt -d corp.com
+
+# Zimbra + JSON
+mailspray zimbra http://webmail.target.com:8443 -u users.txt -p 'Spring2026!' -d target.com -j /tmp/mailspray-results.json
 ```
 
 ---
 
-## 🔌 Протоколы
+## Supported protocols
 
-| Протокол | Порт по умолчанию | Назначение |
-|----------|-------------------|------------|
-| `owa` | 443 | Outlook Web Access |
-| `ews` | 443 | Exchange Web Services |
-| `adfs` | 443 | AD FS (UPN), WS-Trust |
-| `imap` | 993 | IMAP (TLS / STARTTLS) |
-| `smtp` | 587 | SMTP STARTTLS |
-| `roundcube` | 443 | Roundcube |
-| `zimbra` | 443 | Zimbra |
-
-Формат имени по умолчанию зависит от протокола; домен задаётся `-d`, переопределение формата — `-F` (`auto`, `domain_prefix`, `upn`, `plain`). Полный список опций: **`mailspray --help`**.
+```
+owa           Outlook Web Access (Exchange)           [443]  auto: CORP\user
+ews           Exchange Web Services (NTLM/Basic)      [443]  auto: CORP\user
+adfs          AD Federation Services (WS-Trust)       [443]  auto: user@domain
+imap          IMAP with SSL/STARTTLS                  [993]  auto: plain
+smtp          SMTP with STARTTLS                      [587]  auto: plain
+roundcube     Roundcube Webmail                       [443]  auto: user@domain
+zimbra        Zimbra Webmail                          [443]  auto: user@domain
+```
 
 ---
 
-## 🔗 Ссылки
-
-- Репозиторий: [github.com/s0ld13rr/mailspray](https://github.com/s0ld13rr/mailspray)
+**Homepage:** [github.com/s0ld13rr/mailspray](https://github.com/s0ld13rr/mailspray)
