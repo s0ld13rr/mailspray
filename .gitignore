@@ -194,9 +194,10 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 
-# Local-only: notes, lab, secrets — never push to GitHub or GitLab
+# Local-only: notes, lab, secrets, IDE scratch (venv, pytest, compose) — never push
 .claude/
 .cursor/
+/project.md
 
 # Editor ignore lists (optional)
 .cursorignore

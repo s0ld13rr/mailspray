@@ -25,28 +25,29 @@ pipx install .
 
 After the project is published on PyPI, `pipx install mailspray` will work the same way.
 
-**Editable install** from a git clone:
+**Editable install** from a git clone (keep the venv **outside** the repo if you want the tree clean, e.g. `~/venvs/mailspray`):
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
+python3 -m venv ~/venvs/mailspray
+source ~/venvs/mailspray/bin/activate   # Windows: ~\venvs\mailspray\Scripts\activate
+cd /path/to/mailspray
 pip install -e .
 mailspray -V
 ```
 
-You can also run `python main.py …` from the repo root (thin wrapper) or `python -m mailspray …` once the package is on `PYTHONPATH` (e.g. after `pip install -e .`).
+You can also run `python main.py …` from the repo root (thin wrapper) or `python -m mailspray …` after `pip install -e .`.
+
+The **`mailspray/`** directory is the **Python package** consumed by `pip` / `pyproject.toml` (entry point, modules, CLI). It is not a second copy of the repository, only the standard layout for an installable tool.
 
 ---
 
-### Local notes, lab, and sensitive output
+### Local notes, lab, IDE scratch
 
-Everything that is **not** part of the public codebase (reflections, `project.md`, compose, `.env`, user lists, VM artifacts) lives under **`.claude/`**, which is **gitignored**. Put **`project.md`** at **`.claude/project.md`**. Put experiments, Docker Compose, and lab VMs only under **`.claude/lab/`**. The repository root should stay limited to the script and its minimal layout.
+Anything that is **not** shipping code (compose, lab notes, `.env`, user lists, pytest cache, local venv, VM notes) should live under **`.cursor/`**, which is **gitignored**. You can remove **`.cursor/`** entirely when you want a minimal tree; it is never pushed. Optional: keep private notes under **`.claude/`** (also gitignored) if you prefer that split.
 
 **Credential output (`-o`, `-j`):** Hits are **never** written inside the project tree. A **basename only** (e.g. `-o found.txt`) goes to **`~/Downloads/found.txt`**. A **relative path with directories** is resolved from your **current working directory** and **rejected** if it would land inside the repo. **Absolute** paths are allowed only **outside** the project directory.
 
-**Containers:** IMAP and SMTP (e.g. GreenMail) in local Docker are useful. Full **OWA/EWS/Exchange** and **ADFS** parity usually needs a real lab or Windows stack, not a single generic image. Details belong in your local **`.claude/project.md`**.
-
-**Tracked docs:** [docs/LOCAL_LAB.md](docs/LOCAL_LAB.md) (Docker template under `docs/lab/`, cleanup, links to `.claude/` runbooks) and [docs/RELEASE.md](docs/RELEASE.md) (merge flow, tags, optional PyPI).
+**Containers:** IMAP and SMTP (e.g. GreenMail) in local Docker are useful. Full **OWA/EWS/Exchange** and **ADFS** parity usually needs a Windows lab or eval stack. After you clone, copy **`.cursor/lab/docker-compose.example.yml` → `.cursor/lab/docker-compose.yml`** and read **`.cursor/lab/README.md`** (those paths exist only on your machine).
 
 ---
 
