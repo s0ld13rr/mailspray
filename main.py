@@ -23,7 +23,7 @@ except ImportError as e:
     print(f"\033[1;33m[*]\033[0m Run: pip3 install requests")
     sys.exit(1)
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 
 # ── Colors ──────────────────────────────────────────────────────────
 
@@ -119,15 +119,16 @@ class SprayEngine:
         self.skipped = 0
         self.errors = 0
         self.start_time = None
+        self._interrupted = False
 
-    def _delay(self):
+    def _batch_delay(self):
+        """Delay between batches — not per-request."""
         if self.args.delay > 0:
             jitter = self.args.jitter * self.args.delay
             sleep_time = max(0, self.args.delay + random.uniform(-jitter, jitter))
             time.sleep(sleep_time)
 
     def _save(self, proto, target_display, user, password):
-        # strip scheme for clean URI: roundcube://user:pass@host:port
         host = target_display
         if "://" in host:
             host = host.split("://", 1)[1]
@@ -149,7 +150,6 @@ class SprayEngine:
     def _worker(self, scanner, user, password, proto_key, target):
         proto_name = PROTOCOLS[proto_key]["name"]
 
-        # ── Pre-flight checks (under lock to avoid race conditions) ──
         with self.lock:
             if self.args.stop_on_success and user in self._user_found:
                 self.done += 1
@@ -157,18 +157,14 @@ class SprayEngine:
                 if self.args.verbose:
                     log_skip(proto_name, target, user, "already found")
                 return
-
             if self.args.max_attempts > 0:
-                attempts = self._user_attempts.get(user, 0)
-                if attempts >= self.args.max_attempts:
+                if self._user_attempts.get(user, 0) >= self.args.max_attempts:
                     self.done += 1
                     self.skipped += 1
                     if self.args.verbose:
                         log_skip(proto_name, target, user,
-                                 f"max attempts reached ({self.args.max_attempts})")
+                                 f"max attempts ({self.args.max_attempts})")
                     return
-
-        self._delay()
 
         try:
             result = scanner.login(user, password)
@@ -181,7 +177,6 @@ class SprayEngine:
                 log_error(proto_name, target, user, str(e)[:60])
             return
 
-        # Update shared state once — single lock acquisition per successful attempt
         with self.lock:
             self.done += 1
             self._user_attempts[user] = self._user_attempts.get(user, 0) + 1
@@ -194,11 +189,12 @@ class SprayEngine:
         elif self.args.verbose:
             log_fail(proto_name, target, user, password)
 
+    # ── Progress ──
+
     def _progress_thread(self):
-        """Background thread: prints live progress line to stderr."""
         while not self._stop_progress.is_set():
             self._print_progress()
-            self._stop_progress.wait(2)
+            self._stop_progress.wait(1)
         self._clear_progress()
 
     def _print_progress(self):
@@ -206,15 +202,15 @@ class SprayEngine:
             done = self.done
             found = len(self.found)
             errors = self.errors
+            skipped = self.skipped
 
         elapsed = time.time() - self.start_time
         pct = (done / self.total * 100) if self.total else 0
-        actual = done - self.skipped
+        actual = done - skipped
         rps = f"{actual / elapsed:.1f}" if elapsed > 1 else "-"
         eta_str = ""
-        if actual > 0 and done < self.total:
-            remaining = self.total - done
-            eta_sec = (elapsed / actual) * remaining
+        if done > 0 and done < self.total:
+            eta_sec = (elapsed / done) * (self.total - done)
             eta_str = f" ETA {_fmt_duration(eta_sec)}"
 
         line = (f"  {C.D}[{pct:5.1f}%]{C.X} "
@@ -223,7 +219,6 @@ class SprayEngine:
                 f"{C.Y}{errors} err{C.X}  "
                 f"{rps} req/s"
                 f"{eta_str}")
-        # write to stderr so it doesn't mix with piped stdout
         sys.stderr.write(f"\r{line}  \033[K")
         sys.stderr.flush()
 
@@ -231,30 +226,45 @@ class SprayEngine:
         sys.stderr.write("\r\033[K")
         sys.stderr.flush()
 
+    # ── Main loop: batch-based ──
+    # Fires batch of -t concurrent requests, waits --delay, next batch.
+    # With -t 100 --delay 30: 100 requests every 30s = 3.3 req/s.
+
     def run(self, scanner, pairs, proto_key, target):
         self.total = len(pairs)
         self.start_time = time.time()
+        batch_size = self.args.threads
 
-        # start live progress
         self._stop_progress = threading.Event()
         progress = threading.Thread(target=self._progress_thread, daemon=True)
         progress.start()
 
         try:
-            with ThreadPoolExecutor(max_workers=self.args.threads) as pool:
-                futures = []
-                for user, password in pairs:
-                    f = pool.submit(self._worker, scanner, user, password, proto_key, target)
-                    futures.append(f)
-                for f in as_completed(futures):
-                    pass
+            for i in range(0, len(pairs), batch_size):
+                if self._interrupted:
+                    break
+
+                batch = pairs[i:i + batch_size]
+
+                with ThreadPoolExecutor(max_workers=len(batch)) as pool:
+                    futures = [
+                        pool.submit(self._worker, scanner, u, p, proto_key, target)
+                        for u, p in batch
+                    ]
+                    for f in as_completed(futures):
+                        pass
+
+                # delay between batches, skip after last batch
+                if self.args.delay > 0 and (i + batch_size) < len(pairs):
+                    self._batch_delay()
+
         except KeyboardInterrupt:
-            print()
+            self._interrupted = True
+            self._clear_progress()
             log_warn("Interrupted by user")
 
         self._stop_progress.set()
         progress.join(timeout=1)
-
         self._summary()
 
     def _summary(self):
@@ -350,11 +360,11 @@ def build_parser():
 
     engine = parser.add_argument_group(f"{C.W}ENGINE{C.X}")
     engine.add_argument("-t", "--threads", type=int, default=5, metavar="N",
-                        help="Thread count (default: 5; use --fast for local/internal targets)")
+                        help="Batch size: concurrent requests per round (default: 5)")
     engine.add_argument("--fast", action="store_true",
                         help="Fast mode for internal targets: 30 threads, no delay (overrides -t if not set)")
     engine.add_argument("--delay", type=float, default=0.0, metavar="SEC",
-                        help="Delay between requests in seconds")
+                        help="Delay between batches in seconds (not per-request)")
     engine.add_argument("--jitter", type=float, default=0.0, metavar="0-1",
                         help="Jitter factor for delay (0.0-1.0)")
     engine.add_argument("--timeout", type=int, default=10, metavar="SEC",
@@ -492,7 +502,7 @@ def main():
         }
         log_info(f"Format: {C.W}{fmt_labels[fmt]}{C.X}")
 
-    log_info(f"Users: {C.W}{len(users)}{C.X}  |  Passwords: {C.W}{len(passwords)}{C.X}  |  Combos: {C.W}{len(pairs)}{C.X}")
+    log_info(f"Users: {C.W}{len(users)}{C.X}  |  Passwords: {C.W}{len(passwords)}{C.X}  |  Combinations: {C.W}{len(pairs)}{C.X}")
     log_info(f"Threads: {C.W}{args.threads}{C.X}  |  Mode: {mode}")
 
     if args.delay > 0:
@@ -517,4 +527,9 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print()
+        log_warn("Interrupted by user")
+        sys.exit(0)
