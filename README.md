@@ -35,9 +35,9 @@ pip install -e .
 mailspray -V
 ```
 
-You can also run `python main.py …` from the repo root (thin wrapper) or `python -m mailspray …` after `pip install -e .`.
+After `pip install -e .`, use **`python -m mailspray …`** or the **`mailspray`** command from the venv.
 
-The **`mailspray/`** directory is the **Python package** consumed by `pip` / `pyproject.toml` (entry point, modules, CLI). It is not a second copy of the repository, only the standard layout for an installable tool.
+The **`mailspray/`** directory is the **Python package** for `pip` / `pipx` (console command `mailspray`, modules, `cli.py`).
 
 ---
 
@@ -47,7 +47,14 @@ Anything that is **not** shipping code (compose, lab notes, `.env`, user lists, 
 
 **Credential output (`-o`, `-j`):** Optional. If you use them, pass an **explicit path**: absolute (e.g. `-o /tmp/hits.txt`) or **relative path that includes a directory** (e.g. `-o ../out/hits.txt`). **Bare filenames** like `-o found.txt` are **rejected** with an error telling you to specify a full path. Hits are **never** written inside the project tree. Paths under the repo (after resolving relative paths from cwd) are **rejected**.
 
-**What lands on GitHub:** only **tracked** files (`main.py`, `mailspray/`, `pyproject.toml`, `README.md`, `.gitignore`, etc.). **Not** pushed: `.claude/`, `.cursor/`, `dist/`, `__pycache__/`, `.DS_Store` (also add macOS `.DS_Store` to your **global** `core.excludesfile` if needed), `/project.md`, and other gitignored paths. Your local `ls` shows the full working tree; the remote clone matches the repo index only.
+**What is on GitHub (tracked only):**
+
+- `.gitignore`
+- `README.md`
+- `pyproject.toml`
+- `mailspray/` (package: `__init__.py`, `__main__.py`, `cli.py`, `core/`, `modules/`)
+
+**Not in the repo (local / build / IDE only):** `.git/`, `.claude/`, `.cursor/`, `dist/`, `__pycache__/` anywhere, `.DS_Store`, `project.md`, `.trunk` (if excluded), files matching ignored patterns, etc. Run `git ls-files` to see the exact list.
 
 **Containers:** IMAP and SMTP (e.g. GreenMail) in local Docker are useful. Full **OWA/EWS/Exchange** and **ADFS** parity usually needs a Windows lab or eval stack. After you clone, copy **`.cursor/lab/docker-compose.example.yml` → `.cursor/lab/docker-compose.yml`** and read **`.cursor/lab/README.md`** (those paths exist only on your machine).
 
@@ -179,6 +186,6 @@ mailspray zimbra http://webmail.target.com:8443 -u users.txt -p 'Spring2026!' \
 ```
 git clone https://github.com/s0ld13rr/mailspray
 cd mailspray
-pip3 install requests
-python3 main.py --help
+pipx install .
+mailspray --help
 ```

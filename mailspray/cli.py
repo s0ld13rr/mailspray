@@ -37,7 +37,7 @@ def _protected_tree_root():
     pkg_dir = os.path.dirname(os.path.abspath(__file__))
     parent = os.path.dirname(pkg_dir)
     if os.path.basename(pkg_dir) == "mailspray" and os.path.isfile(
-        os.path.join(parent, "main.py")
+        os.path.join(parent, "pyproject.toml")
     ):
         return parent
     return pkg_dir
