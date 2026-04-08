@@ -1,4 +1,4 @@
-# mailspray **v0.5.5**
+# mailspray **v0.5.6**
 
 ```
     ███╗   ███╗ █████╗ ██╗██╗     ███████╗██████╗ ██████╗  █████╗ ██╗   ██╗
@@ -7,7 +7,7 @@
     ██║╚██╔╝██║██╔══██║██║██║     ╚════██║██╔═══╝ ██╔══██╗██╔══██║  ╚██╔╝
     ██║ ╚═╝ ██║██║  ██║██║███████╗███████║██║     ██║  ██║██║  ██║   ██║
     ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝╚══════╝╚══════╝╚═╝     ╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝
-                                          v0.5.5 // mail password spraying toolkit
+                                          v0.5.6 // mail password spraying toolkit
 ```
 
 CLI for password spraying against mail stacks: OWA, EWS, ADFS, IMAP, SMTP, Roundcube, Zimbra. Batching, delay and jitter between batches, per-user attempt limits, protocol-aware username formatting.
@@ -29,7 +29,7 @@ Or clone and `pipx install .`. Requires Python **3.9+**. After PyPI publish: `pi
 
 **Upgrade from GitHub:** either reinstall over the venv (`pipx install git+https://github.com/s0ld13rr/mailspray.git --force`) or run `pipx upgrade mailspray` from a directory where **no** subpath named `mailspray` exists (for example `cd ~` first, not from this repo root).
 
-Optional **local Docker lab** (GreenMail, Roundcube) for IMAP/SMTP/Roundcube checks: [docs/local-mail-lab.md](docs/local-mail-lab.md).
+Optional **local Docker lab** (GreenMail, Roundcube) for IMAP/SMTP/Roundcube checks: [docs/local-mail-lab.md](docs/local-mail-lab.md). **A mail server must listen on the target host:port** before spray, or every attempt fails (v0.5.6+ shows `connect:` errors in `-v` mode).
 
 ---
 

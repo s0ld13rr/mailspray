@@ -13,32 +13,56 @@ class IMAPModule(BaseModule):
             self.port = 993
 
     def login(self, username, password):
+        self.last_error = None
         server = None
         try:
             if self.port == 993:
                 ctx = ssl.create_default_context()
                 ctx.check_hostname = False
                 ctx.verify_mode = ssl.CERT_NONE
-                server = imaplib.IMAP4_SSL(self.host, self.port,
-                                           ssl_context=ctx, timeout=self.timeout)
-            else:
-                server = imaplib.IMAP4(self.host, self.port, timeout=self.timeout)
                 try:
-                    ctx = ssl.create_default_context()
-                    ctx.check_hostname = False
-                    ctx.verify_mode = ssl.CERT_NONE
-                    server.starttls(ssl_context=ctx)
-                except Exception:
-                    pass
+                    server = imaplib.IMAP4_SSL(
+                        self.host,
+                        self.port,
+                        ssl_context=ctx,
+                        timeout=self.timeout,
+                    )
+                except (
+                    socket.timeout,
+                    ConnectionRefusedError,
+                    ssl.SSLError,
+                    OSError,
+                ) as e:
+                    self.last_error = f"connect: {type(e).__name__}: {e}"
+                    return False
+            else:
+                try:
+                    server = imaplib.IMAP4(self.host, self.port, timeout=self.timeout)
+                    try:
+                        ctx = ssl.create_default_context()
+                        ctx.check_hostname = False
+                        ctx.verify_mode = ssl.CERT_NONE
+                        server.starttls(ssl_context=ctx)
+                    except Exception:
+                        pass
+                except (
+                    socket.timeout,
+                    ConnectionRefusedError,
+                    ssl.SSLError,
+                    OSError,
+                ) as e:
+                    self.last_error = f"connect: {type(e).__name__}: {e}"
+                    return False
 
-            server.login(username, password)
+            try:
+                server.login(username, password)
+            except imaplib.IMAP4.error:
+                self.last_error = "auth"
+                return False
             return True
-        except (imaplib.IMAP4.error, socket.timeout, ConnectionError, OSError):
-            return False
         finally:
             if server:
                 try:
-                    # Force-close socket without LOGOUT round-trip — saves one RTT per attempt
                     server.socket().close()
                 except Exception:
                     pass

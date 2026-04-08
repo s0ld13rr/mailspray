@@ -13,34 +13,46 @@ class SMTPModule(BaseModule):
             self.port = 587
 
     def login(self, username, password):
+        self.last_error = None
         server = None
         try:
             ctx = ssl.create_default_context()
             ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE
 
-            if self.port == 465:
-                server = smtplib.SMTP_SSL(self.host, self.port,
-                                          timeout=self.timeout, context=ctx)
-            else:
-                server = smtplib.SMTP(self.host, self.port, timeout=self.timeout)
+            try:
+                if self.port == 465:
+                    server = smtplib.SMTP_SSL(
+                        self.host, self.port, timeout=self.timeout, context=ctx
+                    )
+                else:
+                    server = smtplib.SMTP(
+                        self.host, self.port, timeout=self.timeout
+                    )
 
-            server.ehlo()
-
-            if self.port != 465 and server.has_extn("STARTTLS"):
-                server.starttls(context=ctx)
                 server.ehlo()
 
-            server.login(username, password)
+                if self.port != 465 and server.has_extn("STARTTLS"):
+                    server.starttls(context=ctx)
+                    server.ehlo()
+
+                server.login(username, password)
+            except smtplib.SMTPAuthenticationError:
+                self.last_error = "auth"
+                return False
+            except (
+                smtplib.SMTPException,
+                socket.timeout,
+                ConnectionRefusedError,
+                ssl.SSLError,
+                OSError,
+            ) as e:
+                self.last_error = f"connect: {type(e).__name__}: {e}"
+                return False
             return True
-        except smtplib.SMTPAuthenticationError:
-            return False
-        except (smtplib.SMTPException, socket.timeout, ConnectionError, OSError):
-            return False
         finally:
             if server:
                 try:
-                    # Force-close without QUIT round-trip — saves one RTT per attempt
                     server.sock.close()
                 except Exception:
                     pass

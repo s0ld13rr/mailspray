@@ -285,9 +285,16 @@ class SprayEngine:
                 self._print_line(f"  {proto_tag(proto_name)} {target:<28} {C.Y}[!]{C.X} {user} — {C.Y}{str(e)[:60]}{C.X}")
             return
 
+        le = getattr(scanner, "last_error", None)
+        transport_fail = bool(
+            le and not str(le).startswith("auth")
+        )
+
         with self.lock:
             self.done += 1
             self._user_attempts[user] = self._user_attempts.get(user, 0) + 1
+            if transport_fail:
+                self.errors += 1
             if result:
                 self._user_found.add(user)
 
@@ -295,7 +302,12 @@ class SprayEngine:
             self._print_line(f"  {proto_tag(proto_name)} {target:<28} {C.G}[+]{C.X} {user}:{C.G}{password}{C.X}")
             self._save(proto_key, target, user, password)
         elif self.args.verbose:
-            self._print_line(f"  {proto_tag(proto_name)} {target:<28} {C.R}[-]{C.X} {user}:{C.D}{password}{C.X}")
+            if transport_fail:
+                self._print_line(
+                    f"  {proto_tag(proto_name)} {target:<28} {C.Y}[!]{C.X} {user} — {C.Y}{le}{C.X}"
+                )
+            else:
+                self._print_line(f"  {proto_tag(proto_name)} {target:<28} {C.R}[-]{C.X} {user}:{C.D}{password}{C.X}")
 
     # ── Progress ──
 
@@ -464,8 +476,11 @@ def run_probe(args, parser):
     log_info(f"PROBE {proto['name']} {args.target} user={user!r}")
 
     ok = bool(scanner.login(user, password))
+    le = getattr(scanner, "last_error", None)
     tag = f"{C.G}OK{C.X}" if ok else f"{C.R}FAIL{C.X}"
     print(f"  {C.W}Result:{C.X} {tag}")
+    if not ok and le and not str(le).startswith("auth"):
+        log_warn(f"Transport or server error (not bad password): {le}")
     print()
     sys.exit(0 if ok else 1)
 

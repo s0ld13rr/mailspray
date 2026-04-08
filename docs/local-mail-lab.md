@@ -2,6 +2,14 @@
 
 Use only on **authorized** isolated hosts. This file mirrors the procedure from the maintainer `.cursor/lab`; adjust image tags and **change all passwords** before use.
 
+**mailspray does not start a mail server.** If nothing listens on the chosen host and port, IMAP/SMTP attempts fail at **TCP/TLS** (since v0.5.6 the CLI can show `connect: ...` in verbose mode instead of looking like a wrong password).
+
+## Troubleshooting: 0 found on every line
+
+1. Confirm the server is running (`docker compose ps` or your stack).
+2. Run with **`-v`**: transport failures show as `[!] connect: ...` and increment **errors** in the summary.
+3. Match user list and passwords to accounts that **exist** on that server.
+
 ## Stack
 
 1. **GreenMail** (`greenmail/standalone`) for SMTP and IMAP.

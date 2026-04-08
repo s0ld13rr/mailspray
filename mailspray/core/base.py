@@ -20,6 +20,8 @@ class BaseModule:
         self.port = None       # subclasses set default
         self.scheme = None     # http or https
         self.host = None       # hostname without scheme/port
+        # Set by IMAP/SMTP after login(): "auth" = creds rejected, else transport/parse hint
+        self.last_error = None
 
         # Parse target: can be URL (http://host:port) or plain host
         parsed = urlparse(target if "://" in target else f"parse://{target}")
