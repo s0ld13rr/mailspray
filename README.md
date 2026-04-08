@@ -46,6 +46,8 @@ Everything that is **not** part of the public codebase (reflections, `project.md
 
 **Containers:** IMAP and SMTP (e.g. GreenMail) in local Docker are useful. Full **OWA/EWS/Exchange** and **ADFS** parity usually needs a real lab or Windows stack, not a single generic image. Details belong in your local **`.claude/project.md`**.
 
+**Tracked docs:** [docs/LOCAL_LAB.md](docs/LOCAL_LAB.md) (Docker template under `docs/lab/`, cleanup, links to `.claude/` runbooks) and [docs/RELEASE.md](docs/RELEASE.md) (merge flow, tags, optional PyPI).
+
 ---
 
 ## Protocols
