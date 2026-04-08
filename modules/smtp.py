@@ -15,18 +15,20 @@ class SMTPModule(BaseModule):
     def login(self, username, password):
         server = None
         try:
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+
             if self.port == 465:
-                context = ssl.create_default_context()
-                context.check_hostname = False
-                context.verify_mode = ssl.CERT_NONE
-                server = smtplib.SMTP_SSL(self.host, self.port, timeout=self.timeout, context=context)
+                server = smtplib.SMTP_SSL(self.host, self.port,
+                                          timeout=self.timeout, context=ctx)
             else:
                 server = smtplib.SMTP(self.host, self.port, timeout=self.timeout)
 
             server.ehlo()
 
             if self.port != 465 and server.has_extn("STARTTLS"):
-                server.starttls()
+                server.starttls(context=ctx)
                 server.ehlo()
 
             server.login(username, password)
@@ -38,6 +40,7 @@ class SMTPModule(BaseModule):
         finally:
             if server:
                 try:
-                    server.quit()
+                    # Force-close without QUIT round-trip — saves one RTT per attempt
+                    server.sock.close()
                 except Exception:
                     pass
