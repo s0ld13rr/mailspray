@@ -8,6 +8,11 @@ from mailspray.core.base import BaseModule
 class OWAModule(BaseModule):
     """Outlook Web Access (Exchange). Aligns with browser logon.aspx where possible."""
 
+    # Exchange may return a JS-only shell (no <input type=password>) for modern browser UAs;
+    # SSR logon form is returned for simple/downlevel clients (see mail.stdi.kz style hosts).
+    _OWA_FORM_USER_AGENT = "Mozilla/4.0 (compatible; MSIE 7.0; Windows NT 6.0)"
+    _OWA_FORM_ACCEPT = "*/*"
+
     # Body/URL fragments that indicate failed form login (EN + RU typical OWA strings)
     _FAIL_MARKERS = (
         "incorrect user name or password",
@@ -29,6 +34,37 @@ class OWAModule(BaseModule):
             self.port = 443
         if not self.scheme:
             self.scheme = "https"
+
+    @staticmethod
+    def _logon_html_has_password_input(html):
+        if not html:
+            return False
+        h = html.lower()
+        return 'type="password"' in h or "type='password'" in h
+
+    def _fetch_logon_html(self, session, base):
+        """GET logon.aspx; retry with downlevel UA if server returns JS shell without password field."""
+        logon_url = f"{base}/owa/auth/logon.aspx"
+        html = ""
+        try:
+            g = session.get(logon_url, timeout=self.timeout, allow_redirects=True)
+            if g is not None and g.status_code == 200:
+                html = g.text or ""
+        except Exception:
+            return ""
+
+        if self._logon_html_has_password_input(html):
+            return html
+
+        session.headers["User-Agent"] = self._OWA_FORM_USER_AGENT
+        session.headers["Accept"] = self._OWA_FORM_ACCEPT
+        try:
+            g = session.get(logon_url, timeout=self.timeout, allow_redirects=True)
+            if g is not None and g.status_code == 200:
+                return g.text or ""
+        except Exception:
+            pass
+        return html
 
     def _has_auth_cookie(self, session):
         for c in session.cookies:
@@ -179,14 +215,9 @@ class OWAModule(BaseModule):
         session = self._new_session()
 
         try:
-            logon_url = f"{base}/owa/auth/logon.aspx"
-            try:
-                g = session.get(logon_url, timeout=self.timeout, allow_redirects=True)
-            except Exception:
-                g = None
-
-            if g is not None and g.status_code == 200 and "password" in g.text.lower():
-                built = self._build_logon_post(base, g.text, username, password)
+            html = self._fetch_logon_html(session, base)
+            if self._logon_html_has_password_input(html):
+                built = self._build_logon_post(base, html, username, password)
                 post_url, data = built
                 if post_url and data:
                     try:

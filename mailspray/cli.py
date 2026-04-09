@@ -26,6 +26,8 @@ try:
         SMTPModule,
         ZimbraModule,
     )
+    from mailspray.modules.imap import IMAP_DISCOVERY_PORTS, discover_imap_port
+    from mailspray.modules.smtp import SMTP_DISCOVERY_PORTS, discover_smtp_port
 except ImportError as e:
     print(f"\033[1;31m[!]\033[0m Missing dependency: {e}")
     print(f"\033[1;33m[*]\033[0m Run: pip install requests")
@@ -113,17 +115,14 @@ def ensure_parent_dir(path):
 
 class C:
     R   = "\033[1;31m"    # red
-    G   = "\033[1;32m"    # green
-    Y   = "\033[1;33m"    # yellow
-    B   = "\033[1;34m"    # blue
-    C   = "\033[1;36m"    # cyan
-    W   = "\033[1;37m"    # white
+    G   = "\033[1;32m"    # green (hits)
+    Y   = "\033[1;33m"    # yellow (warnings, highlights)
+    B   = "\033[1;34m"    # blue (accents)
+    M   = "\033[1;35m"    # magenta / purple (protocol label)
+    C   = "\033[1;36m"    # cyan ([*], speed)
+    W   = "\033[1;37m"    # white (labels, URL)
     D   = "\033[2m"       # dim
     X   = "\033[0m"       # reset
-
-    @staticmethod
-    def off():
-        C.R = C.G = C.Y = C.B = C.C = C.W = C.D = C.X = ""
 
 
 # ── Output helpers (NetExec style) ──────────────────────────────────
@@ -153,19 +152,24 @@ PROTOCOL_USER_FORMAT = {
 }
 
 def proto_tag(name):
-    return f"{C.B}{name:<7}{C.X}"
+    """Protocol column: purple header style (matches classic mailspray look)."""
+    return f"{C.M}{name:<7}{C.X}"
 
 def log_success(proto, target, user, password):
-    print(f"  {proto_tag(proto)} {target:<28} {C.G}[+]{C.X} {user}:{C.G}{password}{C.X}")
+    print(f"  {proto_tag(proto)} {C.W}{target:<28}{C.X} {C.G}[+] {user}:{password}{C.X}")
+
+def fmt_fail_line(proto, target, user, password):
+    return f"  {proto_tag(proto)} {C.W}{target:<28}{C.X} {C.R}[-]{C.X} {user}:{C.D}{password}{C.X}"
+
 
 def log_fail(proto, target, user, password):
-    print(f"  {proto_tag(proto)} {target:<28} {C.R}[-]{C.X} {user}:{C.D}{password}{C.X}")
+    print(fmt_fail_line(proto, target, user, password))
 
 def log_error(proto, target, user, msg):
-    print(f"  {proto_tag(proto)} {target:<28} {C.Y}[!]{C.X} {user} — {C.Y}{msg}{C.X}")
+    print(f"  {proto_tag(proto)} {C.W}{target:<28}{C.X} {C.Y}[!]{C.X} {user} — {C.Y}{msg}{C.X}")
 
 def log_skip(proto, target, user, reason):
-    print(f"  {proto_tag(proto)} {target:<28} {C.D}[~]{C.X} {user} — {C.D}{reason}{C.X}")
+    print(f"  {proto_tag(proto)} {C.W}{target:<28}{C.X} {C.D}[~]{C.X} {user} — {C.D}{reason}{C.X}")
 
 def log_info(msg):
     print(f"  {C.C}[*]{C.X} {msg}")
@@ -175,6 +179,44 @@ def log_warn(msg):
 
 def log_good(msg):
     print(f"  {C.G}[+]{C.X} {msg}")
+
+
+def ensure_discovered_port(scanner, args, parser, emit_log=True):
+    """For IMAP/SMTP without URL port or -P, pick first reachable port (ascending lists) or exit."""
+    if args.protocol == "smtp":
+        if scanner.port is not None:
+            return
+        found = discover_smtp_port(scanner.host, args.timeout)
+        if found is None:
+            tried = ", ".join(str(p) for p in SMTP_DISCOVERY_PORTS)
+            parser.error(
+                f"No reachable SMTP port on {scanner.host!r} (tried {tried}). "
+                f"Use -P PORT for a custom port."
+            )
+        scanner.port = found
+        if emit_log:
+            log_info(
+                f"SMTP: auto-selected port {found} "
+                f"(465=SMTPS; other probed ports use STARTTLS when advertised; "
+                f"order: {', '.join(map(str, SMTP_DISCOVERY_PORTS))})"
+            )
+    elif args.protocol == "imap":
+        if scanner.port is not None:
+            return
+        found = discover_imap_port(scanner.host, args.timeout)
+        if found is None:
+            tried = ", ".join(str(p) for p in IMAP_DISCOVERY_PORTS)
+            parser.error(
+                f"No reachable IMAP port on {scanner.host!r} (tried {tried}). "
+                f"Use -P PORT for a non-standard listener."
+            )
+        scanner.port = found
+        if emit_log:
+            log_info(
+                f"IMAP: auto-selected port {found} "
+                f"(993=IMAPS; 143 uses STARTTLS when advertised; "
+                f"order: {', '.join(map(str, IMAP_DISCOVERY_PORTS))})"
+            )
 
 
 # ── Input parsing ───────────────────────────────────────────────────
@@ -264,14 +306,14 @@ class SprayEngine:
                 self.done += 1
                 self.skipped += 1
                 if self.args.verbose:
-                    self._print_line(f"  {proto_tag(proto_name)} {target:<28} {C.D}[~]{C.X} {user} — {C.D}already found{C.X}")
+                    self._print_line(f"  {proto_tag(proto_name)} {C.W}{target:<28}{C.X} {C.D}[~]{C.X} {user} — {C.D}already found{C.X}")
                 return
             if self.args.max_attempts > 0:
                 if self._user_attempts.get(user, 0) >= self.args.max_attempts:
                     self.done += 1
                     self.skipped += 1
                     if self.args.verbose:
-                        self._print_line(f"  {proto_tag(proto_name)} {target:<28} {C.D}[~]{C.X} {user} — {C.D}max attempts ({self.args.max_attempts}){C.X}")
+                        self._print_line(f"  {proto_tag(proto_name)} {C.W}{target:<28}{C.X} {C.D}[~]{C.X} {user} — {C.D}max attempts ({self.args.max_attempts}){C.X}")
                     return
 
         try:
@@ -282,7 +324,7 @@ class SprayEngine:
                 self.done += 1
                 self._user_attempts[user] = self._user_attempts.get(user, 0) + 1
             if self.args.verbose:
-                self._print_line(f"  {proto_tag(proto_name)} {target:<28} {C.Y}[!]{C.X} {user} — {C.Y}{str(e)[:60]}{C.X}")
+                self._print_line(f"  {proto_tag(proto_name)} {C.W}{target:<28}{C.X} {C.Y}[!]{C.X} {user} — {C.Y}{str(e)[:60]}{C.X}")
             return
 
         le = getattr(scanner, "last_error", None)
@@ -299,15 +341,17 @@ class SprayEngine:
                 self._user_found.add(user)
 
         if result:
-            self._print_line(f"  {proto_tag(proto_name)} {target:<28} {C.G}[+]{C.X} {user}:{C.G}{password}{C.X}")
+            self._print_line(
+                f"  {proto_tag(proto_name)} {C.W}{target:<28}{C.X} {C.G}[+] {user}:{password}{C.X}"
+            )
             self._save(proto_key, target, user, password)
         elif self.args.verbose:
             if transport_fail:
                 self._print_line(
-                    f"  {proto_tag(proto_name)} {target:<28} {C.Y}[!]{C.X} {user} — {C.Y}{le}{C.X}"
+                    f"  {proto_tag(proto_name)} {C.W}{target:<28}{C.X} {C.Y}[!]{C.X} {user} — {C.Y}{le}{C.X}"
                 )
             else:
-                self._print_line(f"  {proto_tag(proto_name)} {target:<28} {C.R}[-]{C.X} {user}:{C.D}{password}{C.X}")
+                self._print_line(fmt_fail_line(proto_name, target, user, password))
 
     # ── Progress ──
 
@@ -333,11 +377,11 @@ class SprayEngine:
             eta_sec = (elapsed / done) * (self.total - done)
             eta_str = f" ETA {_fmt_duration(eta_sec)}"
 
-        line = (f"  {C.D}[{pct:5.1f}%]{C.X} "
-                f"{done}/{self.total}  "
+        line = (f"  {C.B}[{pct:5.1f}%]{C.X} "
+                f"{C.W}{done}/{self.total}{C.X}  "
                 f"{C.G}{found} found{C.X}  "
                 f"{C.Y}{errors} err{C.X}  "
-                f"{rps} req/s"
+                f"{C.C}{rps} req/s{C.X}"
                 f"{eta_str}")
         sys.stderr.write(f"\r{line}  \033[K")
         sys.stderr.flush()
@@ -399,30 +443,31 @@ class SprayEngine:
         rps = f"{actual / elapsed:.1f}" if elapsed > 0 else "-"
 
         print()
-        print(f"  {C.W}{'─' * 58}{C.X}")
+        print(f"  {C.B}{'─' * 58}{C.X}")
 
-        stats = (f"{C.G}{len(self.found)} found{C.X}  /  "
-                 f"{self.done} tested  /  "
-                 f"{C.Y}{self.errors} errors{C.X}")
+        stats = (
+            f"{C.G}{len(self.found)} found{C.X}  {C.D}/{C.X}  "
+            f"{C.W}{self.done} tested{C.X}  {C.D}/{C.X}  "
+            f"{C.Y}{self.errors} errors{C.X}"
+        )
         if self.skipped:
-            stats += f"  /  {C.D}{self.skipped} skipped{C.X}"
-        stats += f"  /  {_fmt_duration(elapsed)}  /  {C.C}{rps} req/s{C.X}"
+            stats += f"  {C.D}/{C.X}  {C.D}{self.skipped} skipped{C.X}"
+        stats += (
+            f"  {C.D}/{C.X}  {C.W}{_fmt_duration(elapsed)}{C.X}  {C.D}/{C.X}  "
+            f"{C.C}{rps} req/s{C.X}"
+        )
 
-        print(f"  {C.W}Results:{C.X}  {stats}")
+        print(f"  {C.M}Results:{C.X}  {stats}")
 
-        if self.found:
-            print(f"  {C.W}Creds:{C.X}")
-            for uri in self.found:
-                print(f"    {C.G}{uri}{C.X}")
-            if self.args.output:
-                print(f"  {C.W}Saved:{C.X}   {self.args.output}")
+        if self.found and self.args.output:
+            print(f"  {C.W}Saved:{C.X}   {self.args.output}")
 
         if self.args.json_output and self._found_data:
             with open(self.args.json_output, "w") as f:
                 json.dump(self._found_data, f, indent=2)
             print(f"  {C.W}JSON:{C.X}    {self.args.json_output}")
 
-        print(f"  {C.W}{'─' * 58}{C.X}")
+        print(f"  {C.B}{'─' * 58}{C.X}")
         print()
 
 
@@ -473,7 +518,9 @@ def run_probe(args, parser):
         scanner.debug = True
         scanner.probe_mode = True
 
-    log_info(f"PROBE {proto['name']} {args.target} user={user!r}")
+    ensure_discovered_port(scanner, args, parser, emit_log=True)
+
+    log_info(f"PROBE {proto['name']} {scanner.base_url()} user={user!r}")
 
     ok = bool(scanner.login(user, password))
     le = getattr(scanner, "last_error", None)
@@ -516,9 +563,9 @@ def build_parser():
                         metavar="PROTOCOL",
                         help=f"Protocol: {', '.join(PROTOCOLS.keys())}")
     target.add_argument("target", metavar="TARGET",
-                        help="Host, IP, or URL (e.g. http://mail.corp.com:8080)")
+                        help="Host, IP, or URL. Mail: smtps://host:port, imaps://host:port for TLS wrapper on non-standard ports")
     target.add_argument("-P", "--port", type=int, metavar="PORT",
-                        help="Override default port")
+                        help="Port override; omit for IMAP (143,993) or SMTP (25,465,587,2525,3025) probe")
 
     auth = parser.add_argument_group(f"{C.W}CREDENTIALS{C.X}")
     creds = auth.add_mutually_exclusive_group(required=True)
@@ -564,10 +611,10 @@ def build_parser():
                         help="JSON of found creds (same path rules as -o)")
     output.add_argument("-v", "--verbose", action="store_true",
                         help="Show failed attempts, skips, and errors")
-    output.add_argument("-N", "--no-color", action="store_true",
-                        help="Disable ANSI colors (logs, pipes, CI)")
     output.add_argument("-q", "--no-progress", action="store_true",
                         help="Do not show the live progress line on stderr")
+    # Accepted for backward compatibility; colors are always on (flag ignored).
+    output.add_argument("-N", "--no-color", action="store_true", help=argparse.SUPPRESS)
 
     misc = parser.add_argument_group(f"{C.W}MISC{C.X}")
     misc.add_argument("-h", "--help", action="help",
@@ -610,8 +657,8 @@ def build_parser():
   owa          Outlook Web Access (Exchange)           [443]  auto: CORP\\user
   ews          Exchange Web Services (NTLM/Basic)      [443]  auto: CORP\\user
   adfs         AD Federation Services (WS-Trust)       [443]  auto: user@domain
-  imap         IMAP with SSL/STARTTLS                  [993]  auto: plain
-  smtp         SMTP with STARTTLS                      [587]  auto: plain
+  imap         IMAP / IMAPS                           [auto] 143,993  plain
+  smtp         SMTP / SMTPS                           [auto] 25,465,587,…  plain
   roundcube    Roundcube Webmail                       [443]  auto: user@domain
   zimbra       Zimbra Webmail                          [443]  auto: user@domain
 """
@@ -625,9 +672,6 @@ def main():
 
     parser = build_parser()
     args = parser.parse_args()
-
-    if args.no_color:
-        C.off()
 
     if args.probe_user:
         run_probe(args, parser)
@@ -684,6 +728,8 @@ def main():
     print(BANNER)
     print()
 
+    ensure_discovered_port(scanner, args, parser, emit_log=True)
+
     target_url = scanner.base_url()
     mode = f"{C.Y}FAST{C.X}" if args.fast else f"{C.D}normal{C.X}"
 
@@ -696,13 +742,13 @@ def main():
             "upn":           f"user@{args.domain}",
             "plain":         "plain (no domain)",
         }
-        log_info(f"Format: {C.W}{fmt_labels[fmt]}{C.X}")
+        log_info(f"Format: {C.Y}{fmt_labels[fmt]}{C.X}")
 
-    log_info(f"Users: {C.W}{len(users)}{C.X}  |  Passwords: {C.W}{len(passwords)}{C.X}  |  Combinations: {C.W}{len(pairs)}{C.X}")
-    log_info(f"Threads: {C.W}{args.threads}{C.X}  |  Mode: {mode}")
+    log_info(f"Users: {C.Y}{len(users)}{C.X}  |  Passwords: {C.Y}{len(passwords)}{C.X}  |  Combinations: {C.Y}{len(pairs)}{C.X}")
+    log_info(f"Threads: {C.Y}{args.threads}{C.X}  |  Mode: {mode}")
 
     if args.delay > 0:
-        log_info(f"Delay: {C.W}{args.delay}s{C.X} (jitter: {args.jitter})")
+        log_info(f"Delay: {C.Y}{args.delay}s{C.X} (jitter: {C.Y}{args.jitter}{C.X})")
         # ETA: each batch = threads concurrent, then delay
         batches = (len(pairs) + args.threads - 1) // args.threads
         eta_sec = batches * args.delay
@@ -711,13 +757,13 @@ def main():
         log_info(f"Delay: {C.D}none{C.X}")
 
     if args.max_attempts > 0:
-        log_info(f"Max attempts/user: {C.W}{args.max_attempts}{C.X}")
+        log_info(f"Max attempts/user: {C.Y}{args.max_attempts}{C.X}")
     if args.stop_on_success:
-        log_info(f"Stop-on-success: {C.W}enabled{C.X}")
+        log_info(f"Stop-on-success: {C.Y}enabled{C.X}")
     if args.output:
-        log_info(f"Hits file (-o): {C.W}{args.output}{C.X}")
+        log_info(f"Hits file (-o): {C.Y}{args.output}{C.X}")
     if args.json_output:
-        log_info(f"JSON (-j): {C.W}{args.json_output}{C.X}")
+        log_info(f"JSON (-j): {C.Y}{args.json_output}{C.X}")
 
     print()
 

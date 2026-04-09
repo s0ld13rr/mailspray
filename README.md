@@ -27,16 +27,18 @@ mailspray --help
 
 Or clone and `pipx install .`. Requires Python **3.9+**. After PyPI publish: `pipx install mailspray`.
 
-**Upgrade from GitHub:** either reinstall over the venv (`pipx install git+https://github.com/s0ld13rr/mailspray.git --force`) or run `pipx upgrade mailspray` from a directory where **no** subpath named `mailspray` exists (for example `cd ~` first, not from this repo root).
+**Upgrade:** from a clone, run **`pipx install . --force`** in the repo root (reinstalls from your current tree into the pipx venv; does not change `__version__` in source). From GitHub only: `pipx install git+https://github.com/s0ld13rr/mailspray.git --force`. The command `pipx upgrade mailspray` works if you run it from a directory that does not contain a **`mailspray/`** package folder (for example your home directory), otherwise pipx can confuse the path with the project.
 
-Optional **local Docker lab** (GreenMail, Roundcube) for IMAP/SMTP/Roundcube checks: [docs/local-mail-lab.md](docs/local-mail-lab.md). **A mail server must listen on the target host:port** before spray, or every attempt fails (v0.5.6+ shows `connect:` errors in `-v` mode).
+Optional **local Docker lab** (GreenMail, Roundcube): keep compose and fixtures under **`.cursor/lab/`** (gitignored tree). Runbook (standard vs **`.cursor/lab/docker-compose.free-host-ports.yml`**, **pipx install . --force**, copy-paste checks): **`.cursor/docs/local-mail-lab.md`**. **A mail server must listen on the target host:port** before spray, or attempts fail at connect (use **`-v`** to separate transport errors from bad passwords).
+
+**Using your clone in pipx:** after you pull or edit code, reinstall from the repo root with **`pipx install . --force`** so the **`mailspray`** command matches the tree.
 
 ---
 
 ## Usage overview
 
 ```
-mailspray [-P PORT] (-u USER | -k USER) -p PASS [-d DOMAIN] [-F FMT] [-A URI] [-t N] [-f] [-e SEC] [-B SCOPE] [-J 0-1] [-T SEC] [-n N] [-S] [-D] [-o PATH] [-j PATH] [-v] [-N] [-q] [-h] [-V]
+mailspray [-P PORT] (-u USER | -k USER) -p PASS [-d DOMAIN] [-F FMT] [-A URI] [-t N] [-f] [-e SEC] [-B SCOPE] [-J 0-1] [-T SEC] [-n N] [-S] [-D] [-o PATH] [-j PATH] [-v] [-q] [-h] [-V]
           PROTOCOL TARGET
 ```
 
@@ -80,7 +82,6 @@ mailspray [-P PORT] (-u USER | -k USER) -p PASS [-d DOMAIN] [-F FMT] [-A URI] [-
 | **-o, --output** | Append valid creds to PATH (absolute or relative with dirs; bare names rejected; never inside package tree) |
 | **-j, --json** | JSON file of found creds (same path rules as `-o`) |
 | **-v, --verbose** | Show failures, skips, errors |
-| **-N, --no-color** | Disable ANSI colors |
 | **-q, --no-progress** | Hide live progress line |
 
 ### MISC
@@ -133,8 +134,8 @@ mailspray zimbra http://webmail.target.com:8443 -u users.txt -p 'Spring2026!' -d
 owa           Outlook Web Access (Exchange)           [443]  auto: CORP\user
 ews           Exchange Web Services (NTLM/Basic)      [443]  auto: CORP\user
 adfs          AD Federation Services (WS-Trust)       [443]  auto: user@domain
-imap          IMAP with SSL/STARTTLS                  [993]  auto: plain
-smtp          SMTP with STARTTLS                      [587]  auto: plain
+imap          IMAP / IMAPS                            [auto] 143,993  plain
+smtp          SMTP / SMTPS                            [auto] 25,465,587,…  plain
 roundcube     Roundcube Webmail                       [443]  auto: user@domain
 zimbra        Zimbra Webmail                          [443]  auto: user@domain
 ```

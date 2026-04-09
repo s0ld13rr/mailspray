@@ -27,4 +27,4 @@ path = "mailspray/__init__.py"
 packages = ["mailspray"]
 
 [tool.hatch.build.targets.sdist]
-include = ["/mailspray", "/README.md", "/docs/local-mail-lab.md"]
+include = ["/mailspray", "/README.md"]
