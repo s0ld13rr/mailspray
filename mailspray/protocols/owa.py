@@ -210,15 +210,16 @@ class OWAModule(BaseModule):
         }
         return session.post(url, data=payload, allow_redirects=False, timeout=self.timeout)
 
-    def login(self, username, password):
+    def _authenticate_session(self, username, password):
+        """Return a LIVE requests.Session carrying the OWA auth cookies, or None."""
         base = self.base_url()
         session = self._new_session()
+        ok = False
 
         try:
             html = self._fetch_logon_html(session, base)
             if self._logon_html_has_password_input(html):
-                built = self._build_logon_post(base, html, username, password)
-                post_url, data = built
+                post_url, data = self._build_logon_post(base, html, username, password)
                 if post_url and data:
                     try:
                         r = session.post(
@@ -228,18 +229,38 @@ class OWAModule(BaseModule):
                             timeout=self.timeout,
                         )
                         if self._login_succeeded(r, session):
-                            return True
+                            ok = True
                     except Exception:
                         pass
 
-            try:
-                r = self._post_legacy_auth_owa(session, base, username, password)
-                if self._login_succeeded(r, session):
-                    return True
-            except Exception:
-                pass
+            if not ok:
+                try:
+                    r = self._post_legacy_auth_owa(session, base, username, password)
+                    if self._login_succeeded(r, session):
+                        ok = True
+                except Exception:
+                    pass
+        except Exception:
+            ok = False
 
-        finally:
-            session.close()
+        if ok:
+            return session  # live — holds cadata/cadatakey (+ canary) cookies
+        session.close()
+        return None
 
-        return False
+    def login(self, username, password):
+        session = self._authenticate_session(username, password)
+        if session is None:
+            return False
+        session.close()
+        return True
+
+    def authenticate(self, username, password):
+        """Live OWA session (cookie jar) for post-auth modules (e.g. gal), or None."""
+        return self._authenticate_session(username, password)
+
+    def disconnect(self, handle):
+        try:
+            handle.close()
+        except Exception:
+            pass

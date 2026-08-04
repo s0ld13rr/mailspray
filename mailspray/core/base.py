@@ -58,3 +58,28 @@ class BaseModule:
 
     def login(self, username, password) -> bool:
         raise NotImplementedError
+
+    def authenticate(self, username, password):
+        """Authenticate and return a LIVE handle (conn/session) for post-auth modules.
+
+        Protocols that support -M modules override this and return a still-open
+        connection/session on success, or None on failure. Unlike login() this
+        must NOT tear the session down — the caller owns it and closes it via
+        disconnect(). Default: not supported.
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not support post-auth modules"
+        )
+
+    def disconnect(self, handle):
+        """Close a handle returned by authenticate(). Default: best-effort no-op."""
+        if handle is None:
+            return
+        for closer in ("logout", "close", "quit"):
+            fn = getattr(handle, closer, None)
+            if callable(fn):
+                try:
+                    fn()
+                    return
+                except Exception:
+                    pass

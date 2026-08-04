@@ -32,6 +32,10 @@ class EWSModule(BaseModule):
             self.port = 443
         if not self.scheme:
             self.scheme = "https"
+        # Populated by authenticate(); used by post_soap() for the gal module.
+        self.session = None
+        self.auth = None
+        self.ews_url = None
 
     def _soap_auth_failure(self, text):
         if not text:
@@ -124,3 +128,46 @@ class EWSModule(BaseModule):
             session2.close()
 
         return False
+
+    def authenticate(self, username, password):
+        """Validate via FindFolder and keep a live Basic-auth session.
+
+        Returns self as the handle (EWS re-sends Basic on every request); the gal
+        module calls post_soap() on it. Returns None on failure.
+        """
+        base = self.base_url()
+        url = f"{base}/EWS/Exchange.asmx"
+        session = self._new_session()
+        try:
+            if self._try_findfolder(session, url, username, password):
+                self.session = session
+                self.auth = (username, password)
+                self.ews_url = url
+                return self
+        except Exception:
+            pass
+        session.close()
+        return None
+
+    def post_soap(self, body, soap_action):
+        """POST a SOAP envelope to EWS using the stored Basic credentials."""
+        headers = {
+            "Content-Type": "text/xml; charset=utf-8",
+            "SOAPAction": f'"{soap_action}"',
+        }
+        return self.session.post(
+            self.ews_url,
+            data=body.encode("utf-8"),
+            headers=headers,
+            auth=self.auth,
+            timeout=self.timeout,
+            allow_redirects=False,
+        )
+
+    def disconnect(self, handle):
+        try:
+            sess = getattr(self, "session", None)
+            if sess is not None:
+                sess.close()
+        except Exception:
+            pass

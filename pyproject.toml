@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "mailspray"
 dynamic = ["version"]
-description = "Mail password spraying CLI (OWA, EWS, ADFS, IMAP, SMTP, Roundcube, Zimbra)"
+description = "Mail security toolkit: password spraying (OWA, EWS, ADFS, IMAP, SMTP, Roundcube, Zimbra) + NetExec-style post-auth modules (cred_scan, gal)"
 readme = "README.md"
 requires-python = ">=3.9"
 authors = [{ name = "mailspray contributors" }]

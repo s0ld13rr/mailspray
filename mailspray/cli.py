@@ -17,7 +17,7 @@ warnings.filterwarnings("ignore", message=".*urllib3.*")
 from mailspray import __version__
 
 try:
-    from mailspray.modules import (
+    from mailspray.protocols import (
         ADFSModule,
         EWSModule,
         IMAPModule,
@@ -26,12 +26,15 @@ try:
         SMTPModule,
         ZimbraModule,
     )
-    from mailspray.modules.imap import IMAP_DISCOVERY_PORTS, discover_imap_port
-    from mailspray.modules.smtp import SMTP_DISCOVERY_PORTS, discover_smtp_port
+    from mailspray.protocols.imap import IMAP_DISCOVERY_PORTS, discover_imap_port
+    from mailspray.protocols.smtp import SMTP_DISCOVERY_PORTS, discover_smtp_port
 except ImportError as e:
     print(f"\033[1;31m[!]\033[0m Missing dependency: {e}")
     print(f"\033[1;33m[*]\033[0m Run: pip install requests")
     sys.exit(1)
+
+from mailspray.core.db import WorkspaceDB
+from mailspray.core.module import ModuleContext, get_module, list_modules
 
 
 def _protected_tree_root():
@@ -263,6 +266,10 @@ class SprayEngine:
         self.errors = 0
         self.start_time = None
         self._interrupted = False
+        self._port = None
+        self._host = None
+        # Workspace findings store (NetExec-style). Best-effort; never aborts a run.
+        self.db = WorkspaceDB(getattr(args, "workspace", "default"), warn=log_warn)
 
     def _batch_delay(self):
         """Delay between batches — not per-request."""
@@ -289,6 +296,9 @@ class SprayEngine:
             if self.args.output:
                 with open(self.args.output, "a") as f:
                     f.write(uri + "\n")
+        # Persist to workspace DB (thread-safe internally; best-effort).
+        # Use scanner.host (clean, no port) so spray and -M runs store the same host.
+        self.db.add_credential(proto, self._host or host, self._port, user, password)
 
     def _print_line(self, msg):
         """Print a line cleanly: clear progress bar, print, progress resumes on next tick."""
@@ -397,6 +407,8 @@ class SprayEngine:
     def run(self, scanner, pairs, proto_key, target):
         self.total = len(pairs)
         self.start_time = time.time()
+        self._port = getattr(scanner, "port", None)
+        self._host = getattr(scanner, "host", None)
         batch_size = self.args.threads
 
         self._stop_progress = threading.Event()
@@ -436,6 +448,7 @@ class SprayEngine:
         if progress:
             progress.join(timeout=1)
         self._summary()
+        self.db.close()
 
     def _summary(self):
         elapsed = time.time() - self.start_time
@@ -549,6 +562,122 @@ def _fmt_duration(seconds):
         return f"{d}d {h}h"
 
 
+def parse_module_options(pairs):
+    """Turn a list of KEY=VAL strings (-O) into a dict. Bare KEY becomes KEY=true."""
+    opts = {}
+    for item in pairs or []:
+        if "=" in item:
+            k, v = item.split("=", 1)
+            opts[k.strip()] = v.strip()
+        else:
+            opts[item.strip()] = "true"
+    return opts
+
+
+def print_modules():
+    """List discovered post-auth modules (for -L / --list-modules)."""
+    print(BANNER)
+    print()
+    mods = list_modules()
+    if not mods:
+        log_warn("No modules found")
+        return
+    log_info(f"Available modules ({len(mods)}):")
+    print()
+    for name, cls in mods.items():
+        protos = ", ".join(cls.supported_protocols) or "-"
+        print(f"  {C.G}{name:<12}{C.X} {C.D}[{protos}]{C.X}")
+        print(f"    {C.W}{cls.description}{C.X}")
+        for k, h in (cls.opts_help or {}).items():
+            print(f"      {C.C}-O {k}{C.X}  {C.D}{h}{C.X}")
+        print()
+
+
+def run_module(args, parser):
+    """Authenticate with the given creds and run a post-auth module (-M)."""
+    print(BANNER)
+    print()
+
+    module = get_module(args.module)
+    if module is None:
+        avail = ", ".join(list_modules().keys()) or "(none)"
+        parser.error(f"Unknown module {args.module!r}. Available: {avail}")
+    if args.protocol not in module.supported_protocols:
+        parser.error(
+            f"Module {args.module!r} supports {module.supported_protocols}, "
+            f"not {args.protocol!r}"
+        )
+
+    parsed_opts = parse_module_options(args.module_options)
+    module.options(parsed_opts)
+
+    raw_user = args.user or args.probe_user
+    users = apply_domain(load_list(raw_user), args.domain, args.protocol, args.user_format)
+    passwords = load_list(args.password)
+    if not users or not passwords:
+        parser.error("Module run requires at least one user and password")
+
+    proto = PROTOCOLS[args.protocol]
+    scanner = proto["cls"](args.target)
+    scanner.timeout = args.timeout
+    if args.port:
+        scanner.port = args.port
+    if args.protocol == "adfs" and args.adfs_applies_to:
+        scanner.applies_to = args.adfs_applies_to
+    ensure_discovered_port(scanner, args, parser, emit_log=True)
+
+    log_info(f"MODULE {C.Y}{args.module}{C.X} on {proto['name']} {scanner.base_url()}")
+    db = WorkspaceDB(args.workspace, warn=log_warn)
+
+    ran = 0
+    try:
+        for password in passwords:
+            for user in users:
+                try:
+                    handle = scanner.authenticate(user, password)
+                except NotImplementedError as e:
+                    parser.error(str(e))
+                    return
+                except Exception as e:
+                    log_error(proto["name"], scanner.base_url(), user,
+                              f"auth error: {str(e)[:60]}")
+                    continue
+
+                if handle is None:
+                    le = getattr(scanner, "last_error", None)
+                    if le and not str(le).startswith("auth"):
+                        log_warn(f"{user}: transport/server error: {le}")
+                    elif args.verbose:
+                        log_fail(proto["name"], scanner.base_url(), user, password)
+                    continue
+
+                log_success(proto["name"], scanner.base_url(), user, password)
+                db.add_credential(args.protocol, scanner.host, scanner.port, user, password)
+
+                ctx = ModuleContext(
+                    protocol=args.protocol, host=scanner.host, username=user,
+                    options=parsed_opts, db=db, module_name=args.module,
+                    base_url=scanner.base_url(), timeout=args.timeout,
+                    log_info=log_info, log_good=log_good, log_warn=log_warn,
+                )
+                try:
+                    module.on_auth(ctx, handle)
+                except Exception as e:
+                    log_warn(f"module {args.module} error: {str(e)[:120]}")
+                finally:
+                    try:
+                        scanner.disconnect(handle)
+                    except Exception:
+                        pass
+                ran += 1
+    finally:
+        db.close()
+
+    print()
+    log_info(f"Module run complete — {ran} successful auth(s)")
+    sys.exit(0 if ran > 0 else 1)
+
+
 def build_parser():
     parser = argparse.ArgumentParser(
         prog="mailspray",
@@ -559,21 +688,25 @@ def build_parser():
     parser.set_defaults(threads_explicit=False)
 
     target = parser.add_argument_group(f"{C.W}TARGET{C.X}")
+    # Optional at the parser level so `-L`/`--list-modules` works with no target;
+    # main() enforces their presence for every non-listing invocation.
     target.add_argument("protocol", choices=list(PROTOCOLS.keys()),
-                        metavar="PROTOCOL",
+                        metavar="PROTOCOL", nargs="?", default=None,
                         help=f"Protocol: {', '.join(PROTOCOLS.keys())}")
-    target.add_argument("target", metavar="TARGET",
+    target.add_argument("target", metavar="TARGET", nargs="?", default=None,
                         help="Host, IP, or URL. Mail: smtps://host:port, imaps://host:port for TLS wrapper on non-standard ports")
     target.add_argument("-P", "--port", type=int, metavar="PORT",
                         help="Port override; omit for IMAP (143,993) or SMTP (25,465,587,2525,3025) probe")
 
     auth = parser.add_argument_group(f"{C.W}CREDENTIALS{C.X}")
-    creds = auth.add_mutually_exclusive_group(required=True)
+    # Not required at parser level (so -L works); main() enforces for real runs.
+    # The group stays mutually exclusive: -u and -k cannot be combined.
+    creds = auth.add_mutually_exclusive_group()
     creds.add_argument("-u", "--user", metavar="USER",
                        help="Username or file with usernames (spray mode)")
     creds.add_argument("-k", "--probe", dest="probe_user", metavar="USER",
                        help="Single-user probe: one login attempt, then exit")
-    auth.add_argument("-p", "--password", required=True, metavar="PASS",
+    auth.add_argument("-p", "--password", metavar="PASS",
                       help="Password or file with passwords")
     auth.add_argument("-d", "--domain", metavar="DOMAIN",
                       help="Domain to apply to usernames (format chosen automatically per protocol)")
@@ -616,6 +749,17 @@ def build_parser():
     # Accepted for backward compatibility; colors are always on (flag ignored).
     output.add_argument("-N", "--no-color", action="store_true", help=argparse.SUPPRESS)
 
+    modules_grp = parser.add_argument_group(f"{C.W}MODULES{C.X}")
+    modules_grp.add_argument("-M", "--module", metavar="NAME",
+                        help="Run a post-auth module after successful login (e.g. cred_scan, gal)")
+    modules_grp.add_argument("-L", "--list-modules", action="store_true",
+                        help="List available modules and exit")
+    modules_grp.add_argument("-O", "--module-options", action="append", metavar="KEY=VAL",
+                        dest="module_options", default=[],
+                        help="Module option, repeatable (e.g. -O folders=INBOX,Sent -O max=200)")
+    modules_grp.add_argument("-w", "--workspace", default="default", metavar="NAME",
+                        help="Findings workspace DB (~/.mailspray/workspaces/NAME.db; default: default)")
+
     misc = parser.add_argument_group(f"{C.W}MISC{C.X}")
     misc.add_argument("-h", "--help", action="help",
                       help="Show this help message")
@@ -653,6 +797,16 @@ def build_parser():
   {C.D}# Zimbra + JSON{C.X}
   mailspray zimbra http://webmail.target.com:8443 -u users.txt -p 'Spring2026!' -d target.com -j /tmp/mailspray-results.json
 
+  {C.D}# Modules (NetExec style): list, then run post-auth{C.X}
+  mailspray -L
+  mailspray imap mail.corp.com -u user -p 'Pass!' -M cred_scan -O folders=INBOX,Sent -O max=200
+  mailspray owa https://owa.corp.com -u user -p 'Pass!' -d CORP -M gal -O out=/tmp/gal.txt
+
+{C.W}MODULES (-M):{C.X}
+  cred_scan    Search mailbox for credentials/VPN/access secrets   [imap]
+  gal          Dump the Global Address List (directory)            [owa, ews]
+  {C.D}Findings are stored in ~/.mailspray/workspaces/<-w name>.db (credentials + loot).{C.X}
+
 {C.W}SUPPORTED PROTOCOLS:{C.X}
   owa          Outlook Web Access (Exchange)           [443]  auto: CORP\\user
   ews          Exchange Web Services (NTLM/Basic)      [443]  auto: CORP\\user
@@ -672,6 +826,26 @@ def main():
 
     parser = build_parser()
     args = parser.parse_args()
+
+    # -L lists modules and exits (no target/creds needed). Handled AFTER a full
+    # parse so a value that merely equals "-L" (e.g. -p '-L') can't hijack a run,
+    # and a bundled -qL is honoured.
+    if args.list_modules:
+        print_modules()
+        sys.exit(0)
+
+    # Enforce the arguments that are required for every real run.
+    if not args.protocol:
+        parser.error("PROTOCOL is required (one of: " + ", ".join(PROTOCOLS.keys()) + ")")
+    if not args.target:
+        parser.error("TARGET is required (host, IP, or URL)")
+    if not args.user and not args.probe_user:
+        parser.error("one of the arguments -u/--user -k/--probe is required")
+    if args.password is None:
+        parser.error("the following argument is required: -p/--password")
+
+    if args.module:
+        run_module(args, parser)
 
     if args.probe_user:
         run_probe(args, parser)

@@ -102,11 +102,24 @@ class IMAPModule(BaseModule):
             self.host, self.port, self.timeout, ctx
         )
 
-    def login(self, username, password):
+    @staticmethod
+    def _safe_close(server):
+        if not server:
+            return
+        try:
+            server.logout()
+        except Exception:
+            try:
+                server.socket().close()
+            except Exception:
+                pass
+
+    def _authenticate_conn(self, username, password):
+        """Return a LIVE authenticated imaplib connection, or None. Sets last_error."""
         self.last_error = None
         if not self.port:
             self.last_error = "connect: port not set"
-            return False
+            return None
 
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
@@ -125,12 +138,29 @@ class IMAPModule(BaseModule):
                     server = self._login_ssl(ctx)
                 else:
                     server = self._login_plain(ctx)
-                try:
-                    server.login(username, password)
-                    return True
-                except imaplib.IMAP4.error:
-                    self.last_error = "auth"
-                    return False
+            except (
+                imaplib.IMAP4.error,   # greeting error/abort (e.g. "* BYE too many conns") in __init__
+                socket.timeout,
+                ConnectionRefusedError,
+                ssl.SSLError,
+                OSError,
+            ) as e:
+                last_transport = f"connect: {type(e).__name__}: {e}"
+                self._safe_close(server)
+                continue
+
+            try:
+                server.login(username, password)
+                return server  # LIVE — caller owns it (spray closes, modules keep)
+            except imaplib.IMAP4.abort as e:
+                # Connection dropped mid-LOGIN (rate-limit/greylist) — transport, not bad creds.
+                last_transport = f"connect: IMAP4.abort: {e}"
+                self._safe_close(server)
+                continue
+            except imaplib.IMAP4.error:
+                self.last_error = "auth"
+                self._safe_close(server)
+                return None
             except (
                 socket.timeout,
                 ConnectionRefusedError,
@@ -138,15 +168,22 @@ class IMAPModule(BaseModule):
                 OSError,
             ) as e:
                 last_transport = f"connect: {type(e).__name__}: {e}"
-            finally:
-                if server:
-                    try:
-                        server.logout()
-                    except Exception:
-                        try:
-                            server.socket().close()
-                        except Exception:
-                            pass
-            continue
+                self._safe_close(server)
+                continue
+
         self.last_error = last_transport or "connect: all transports failed"
-        return False
+        return None
+
+    def login(self, username, password):
+        server = self._authenticate_conn(username, password)
+        if server is None:
+            return False
+        self._safe_close(server)
+        return True
+
+    def authenticate(self, username, password):
+        """Live imaplib connection for post-auth modules (e.g. cred_scan), or None."""
+        return self._authenticate_conn(username, password)
+
+    def disconnect(self, handle):
+        self._safe_close(handle)
