@@ -33,7 +33,7 @@ except ImportError as e:
     print(f"\033[1;33m[*]\033[0m Run: pip install requests")
     sys.exit(1)
 
-from mailspray.core.db import WorkspaceDB, list_workspaces
+from mailspray.core.findings import FindingsStore, list_workspaces
 from mailspray.core.module import ModuleContext, get_module, list_modules
 
 
@@ -268,8 +268,7 @@ class SprayEngine:
         self._interrupted = False
         self._port = None
         self._host = None
-        # Workspace findings store (NetExec-style). Best-effort; never aborts a run.
-        self.db = WorkspaceDB(getattr(args, "workspace", "default"), warn=log_warn)
+        self.db = FindingsStore(getattr(args, "workspace", "default"), warn=log_warn)
 
     def _batch_delay(self):
         """Delay between batches — not per-request."""
@@ -631,7 +630,7 @@ def run_module(args, parser):
     ensure_discovered_port(scanner, args, parser, emit_log=True)
 
     log_info(f"MODULE {C.Y}{args.module}{C.X} on {proto['name']} {scanner.base_url()}")
-    db = WorkspaceDB(args.workspace, warn=log_warn)
+    db = FindingsStore(args.workspace, warn=log_warn)
     db.start_run(args.protocol, scanner.base_url(), "module", module=args.module,
                  users=len(users), passwords=len(passwords))
 
@@ -706,7 +705,7 @@ def _print_table(headers, rows):
 
 
 def show_findings(args):
-    """Render stored findings for --workspaces / --runs / --creds / --loot."""
+    """Render stored findings for --workspaces / --creds / --loot."""
     print(BANNER)
     print()
 
@@ -718,43 +717,44 @@ def show_findings(args):
         log_info(f"Workspaces ({len(wss)}):")
         print()
         rows = []
-        for name, _path in wss:
-            db = WorkspaceDB(name, warn=log_warn)
-            rows.append([name, db.count("runs"), db.count("credentials"), db.count("loot")])
-            db.close()
-        _print_table(["workspace", "runs", "creds", "loot"], rows)
+        for name, path in wss:
+            store = FindingsStore(workspace=name, warn=log_warn)
+            ncreds = len(store.get_credentials())
+            loot_files = store.get_loot_files()
+            nloot = sum(c for _, c in loot_files)
+            rows.append([name, ncreds, nloot, path])
+        _print_table(["workspace", "creds", "loot", "path"], rows)
         print()
         return
 
-    db = WorkspaceDB(args.workspace, warn=log_warn)
-    log_info(f"Workspace: {C.Y}{args.workspace}{C.X}  {C.D}({db.path}){C.X}")
+    store = FindingsStore(workspace=args.workspace, warn=log_warn)
+    log_info(f"Workspace: {C.Y}{args.workspace}{C.X}  {C.D}({store.dir}){C.X}")
     print()
 
-    if args.runs:
-        rows = [[r[0], r[1], r[2], r[3], r[4], r[5] or "", r[8], r[9]] for r in db.get_runs()]
-        if rows:
-            _print_table(["id", "started", "proto", "target", "mode", "module", "found", "loot"], rows)
-        else:
-            log_warn("No runs recorded in this workspace")
-        print()
-
     if args.show_creds:
-        rows = [[r[0], r[1], r[2], r[3], r[4], r[5], r[6]] for r in db.get_credentials(run=args.run_filter)]
-        if rows:
-            _print_table(["run", "proto", "host", "port", "user", "password", "first_seen"], rows)
+        creds = store.get_credentials()
+        if creds:
+            log_info(f"Credentials ({len(creds)}):")
+            print()
+            for line in creds:
+                print(f"  {C.G}{line}{C.X}")
         else:
-            log_warn("No credentials stored" + (f" for run {args.run_filter}" if args.run_filter else ""))
+            log_warn("No credentials stored")
         print()
 
     if args.show_loot:
-        rows = [[r[0], r[1], r[5], r[6], r[7], r[8]] for r in db.get_loot(run=args.run_filter)]
-        if rows:
-            _print_table(["run", "module", "category", "key", "value", "source"], rows)
+        loot_files = store.get_loot_files()
+        if loot_files:
+            for fn, count in loot_files:
+                module_name = fn.rsplit(".", 1)[0]
+                log_info(f"{module_name} ({count} entries)  {C.D}{os.path.join(store.dir, fn)}{C.X}")
+                print()
+                for line in store.get_loot(fn):
+                    print(f"  {line}")
+                print()
         else:
-            log_warn("No loot stored" + (f" for run {args.run_filter}" if args.run_filter else ""))
+            log_warn("No loot stored")
         print()
-
-    db.close()
 
 
 def build_parser():
@@ -837,19 +837,15 @@ def build_parser():
                         dest="module_options", default=[],
                         help="Module option, repeatable (e.g. -O folders=INBOX,Sent -O max=200)")
     modules_grp.add_argument("-w", "--workspace", default="default", metavar="NAME",
-                        help="Findings workspace DB (~/.mailspray/workspaces/NAME.db; default: default)")
+                        help="Findings workspace (~/.mailspray/NAME/; default: default)")
 
     findings = parser.add_argument_group(f"{C.W}FINDINGS{C.X}")
     findings.add_argument("--workspaces", action="store_true",
                         help="List all workspaces and exit")
-    findings.add_argument("--runs", action="store_true",
-                        help="List past runs in the workspace and exit")
     findings.add_argument("--creds", dest="show_creds", action="store_true",
                         help="Show stored valid credentials and exit")
     findings.add_argument("--loot", dest="show_loot", action="store_true",
                         help="Show stored module loot and exit")
-    findings.add_argument("--run", dest="run_filter", type=int, metavar="ID",
-                        help="Filter --creds/--loot to a single run id")
 
     misc = parser.add_argument_group(f"{C.W}MISC{C.X}")
     misc.add_argument("-h", "--help", action="help",
@@ -896,7 +892,7 @@ def build_parser():
 {C.W}MODULES (-M):{C.X}
   cred_scan    Search mailbox for credentials/VPN/access secrets   [imap]
   gal          Dump the Global Address List (directory)            [owa, ews]
-  {C.D}Findings are stored in ~/.mailspray/workspaces/<-w name>.db (credentials + loot).{C.X}
+  {C.D}Findings are stored in ~/.mailspray/<-w name>/ as plain text files.{C.X}
 
 {C.W}SUPPORTED PROTOCOLS:{C.X}
   owa          Outlook Web Access (Exchange)           [443]  auto: CORP\\user
@@ -926,7 +922,7 @@ def main():
         sys.exit(0)
 
     # Findings viewers — no target/creds needed; exit after rendering.
-    if args.workspaces or args.runs or args.show_creds or args.show_loot:
+    if args.workspaces or args.show_creds or args.show_loot:
         show_findings(args)
         sys.exit(0)
 
