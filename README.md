@@ -1,4 +1,4 @@
-# mailspray **v0.5.7**
+# mailspray **v0.5.8**
 
 ```
     ███╗   ███╗ █████╗ ██╗██╗     ███████╗██████╗ ██████╗  █████╗ ██╗   ██╗
@@ -7,7 +7,7 @@
     ██║╚██╔╝██║██╔══██║██║██║     ╚════██║██╔═══╝ ██╔══██╗██╔══██║  ╚██╔╝
     ██║ ╚═╝ ██║██║  ██║██║███████╗███████║██║     ██║  ██║██║  ██║   ██║
     ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝╚══════╝╚══════╝╚═╝     ╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝
-                                          v0.5.7 // mail password spraying toolkit
+                                          v0.5.8 // mail password spraying toolkit
 ```
 
 CLI for password spraying against mail stacks: OWA, EWS, ADFS, IMAP, SMTP, Roundcube, Zimbra. Batching, delay and jitter between batches, per-user attempt limits, protocol-aware username formatting.
@@ -161,11 +161,19 @@ mailspray ews https://mail.corp.com -u user -p 'Pass!' -d CORP -M gal -O prefix=
 | **cred_scan** | `imap` | Scans message bodies and text attachments for passwords, private keys, API keys, VPN configs, connection strings, and inline URL credentials. Uses `BODY.PEEK` — never marks mail as read. Options: `folders`, `max`, `since`, `attachments`. |
 | **gal** | `owa`, `ews` | Dumps the Global Address List. OWA path reuses the authenticated cookie session against `/owa/service.svc?action=FindPeople` (MailSniper technique); EWS path sweeps `ResolveNames` (Basic auth). Options: `prefix`, `max`, `out`. |
 
-**Findings store.** Every valid credential (from spraying *or* module runs) plus all module loot is written to a per-workspace SQLite DB at `~/.mailspray/workspaces/<name>.db` (default workspace `default`, override with `-w`). Tables: `credentials` and `loot`. Writes are best-effort and never abort a run.
+**Findings store.** Every valid credential (from spraying *or* module runs) plus all module loot is written to a per-workspace SQLite DB at `~/.mailspray/workspaces/<name>.db` (default workspace `default`, override with `-w`). Each invocation is recorded in a `runs` table and findings are tagged with the run that first surfaced them. Writes are best-effort and never abort a run.
+
+View findings from the tool — no SQL needed:
 
 ```bash
-sqlite3 ~/.mailspray/workspaces/default.db 'select category, key, source from loot;'
+mailspray --workspaces               # all workspaces + row counts
+mailspray --runs -w default          # every recorded run (id, time, mode, module, found/loot)
+mailspray --creds -w default         # stored valid credentials
+mailspray --loot  -w default         # stored module loot
+mailspray --loot --run 2 -w default  # scope to a single run id
 ```
+
+The raw SQLite DB (`credentials`, `loot`, `runs` tables) is still there if you want ad-hoc queries.
 
 ---
 

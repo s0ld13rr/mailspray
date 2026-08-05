@@ -33,7 +33,7 @@ except ImportError as e:
     print(f"\033[1;33m[*]\033[0m Run: pip install requests")
     sys.exit(1)
 
-from mailspray.core.db import WorkspaceDB
+from mailspray.core.db import WorkspaceDB, list_workspaces
 from mailspray.core.module import ModuleContext, get_module, list_modules
 
 
@@ -409,6 +409,9 @@ class SprayEngine:
         self.start_time = time.time()
         self._port = getattr(scanner, "port", None)
         self._host = getattr(scanner, "host", None)
+        self.db.start_run(proto_key, target, "spray",
+                          users=len({u for u, _ in pairs}),
+                          passwords=len({p for _, p in pairs}))
         batch_size = self.args.threads
 
         self._stop_progress = threading.Event()
@@ -448,6 +451,7 @@ class SprayEngine:
         if progress:
             progress.join(timeout=1)
         self._summary()
+        self.db.finish_run()
         self.db.close()
 
     def _summary(self):
@@ -628,6 +632,8 @@ def run_module(args, parser):
 
     log_info(f"MODULE {C.Y}{args.module}{C.X} on {proto['name']} {scanner.base_url()}")
     db = WorkspaceDB(args.workspace, warn=log_warn)
+    db.start_run(args.protocol, scanner.base_url(), "module", module=args.module,
+                 users=len(users), passwords=len(passwords))
 
     ran = 0
     try:
@@ -671,11 +677,84 @@ def run_module(args, parser):
                         pass
                 ran += 1
     finally:
+        db.finish_run()
         db.close()
 
     print()
     log_info(f"Module run complete — {ran} successful auth(s)")
     sys.exit(0 if ran > 0 else 1)
+
+
+def _print_table(headers, rows):
+    """Print a simple aligned, colorized table (truncates wide cells)."""
+    maxw = 46
+    ncol = len(headers)
+    norm = [[("" if c is None else str(c)) for c in r] for r in rows]
+    widths = []
+    for i in range(ncol):
+        cells = [headers[i]] + [r[i] for r in norm]
+        widths.append(min(max(len(x) for x in cells), maxw))
+
+    def line(vals, color):
+        cells = [str(v)[:w].ljust(w) for v, w in zip(vals, widths)]
+        return f"  {color}" + "  ".join(cells) + f"{C.X}"
+
+    print(line(headers, C.W))
+    print(line(["-" * w for w in widths], C.D))
+    for r in norm:
+        print(line(r, C.X))
+
+
+def show_findings(args):
+    """Render stored findings for --workspaces / --runs / --creds / --loot."""
+    print(BANNER)
+    print()
+
+    if args.workspaces:
+        wss = list_workspaces()
+        if not wss:
+            log_warn("No workspaces yet — run a spray or a module first")
+            return
+        log_info(f"Workspaces ({len(wss)}):")
+        print()
+        rows = []
+        for name, _path in wss:
+            db = WorkspaceDB(name, warn=log_warn)
+            rows.append([name, db.count("runs"), db.count("credentials"), db.count("loot")])
+            db.close()
+        _print_table(["workspace", "runs", "creds", "loot"], rows)
+        print()
+        return
+
+    db = WorkspaceDB(args.workspace, warn=log_warn)
+    log_info(f"Workspace: {C.Y}{args.workspace}{C.X}  {C.D}({db.path}){C.X}")
+    print()
+
+    if args.runs:
+        rows = [[r[0], r[1], r[2], r[3], r[4], r[5] or "", r[8], r[9]] for r in db.get_runs()]
+        if rows:
+            _print_table(["id", "started", "proto", "target", "mode", "module", "found", "loot"], rows)
+        else:
+            log_warn("No runs recorded in this workspace")
+        print()
+
+    if args.show_creds:
+        rows = [[r[0], r[1], r[2], r[3], r[4], r[5], r[6]] for r in db.get_credentials(run=args.run_filter)]
+        if rows:
+            _print_table(["run", "proto", "host", "port", "user", "password", "first_seen"], rows)
+        else:
+            log_warn("No credentials stored" + (f" for run {args.run_filter}" if args.run_filter else ""))
+        print()
+
+    if args.show_loot:
+        rows = [[r[0], r[1], r[5], r[6], r[7], r[8]] for r in db.get_loot(run=args.run_filter)]
+        if rows:
+            _print_table(["run", "module", "category", "key", "value", "source"], rows)
+        else:
+            log_warn("No loot stored" + (f" for run {args.run_filter}" if args.run_filter else ""))
+        print()
+
+    db.close()
 
 
 def build_parser():
@@ -760,6 +839,18 @@ def build_parser():
     modules_grp.add_argument("-w", "--workspace", default="default", metavar="NAME",
                         help="Findings workspace DB (~/.mailspray/workspaces/NAME.db; default: default)")
 
+    findings = parser.add_argument_group(f"{C.W}FINDINGS{C.X}")
+    findings.add_argument("--workspaces", action="store_true",
+                        help="List all workspaces and exit")
+    findings.add_argument("--runs", action="store_true",
+                        help="List past runs in the workspace and exit")
+    findings.add_argument("--creds", dest="show_creds", action="store_true",
+                        help="Show stored valid credentials and exit")
+    findings.add_argument("--loot", dest="show_loot", action="store_true",
+                        help="Show stored module loot and exit")
+    findings.add_argument("--run", dest="run_filter", type=int, metavar="ID",
+                        help="Filter --creds/--loot to a single run id")
+
     misc = parser.add_argument_group(f"{C.W}MISC{C.X}")
     misc.add_argument("-h", "--help", action="help",
                       help="Show this help message")
@@ -832,6 +923,11 @@ def main():
     # and a bundled -qL is honoured.
     if args.list_modules:
         print_modules()
+        sys.exit(0)
+
+    # Findings viewers — no target/creds needed; exit after rendering.
+    if args.workspaces or args.runs or args.show_creds or args.show_loot:
+        show_findings(args)
         sys.exit(0)
 
     # Enforce the arguments that are required for every real run.
